@@ -92,10 +92,8 @@ def _rehearse(conn, cfg, item, sender, body, username, ledger) -> dict:
 
     if action == WEEKLY_CODE:
         sender.send_pm(username, item["subject"] or f"Your {cfg.name} promo code", body)
-        ack = cfg.templates.get("public_ack")
-        if ack and item["trigger_type"] == "comment" and item["parent_id"]:
-            _s, ack_body = ack.render(username=username, app_name=cfg.name, code="")
-            sender.reply_to_comment(item["parent_id"], ack_body)
+        if item["ack_body"] and item["trigger_type"] == "comment" and item["parent_id"]:
+            sender.reply_to_comment(item["parent_id"], item["ack_body"])
     elif item["parent_id"] and item["trigger_type"] == "message":
         sender.reply_to_message(item["parent_id"], body)
     else:
@@ -154,9 +152,8 @@ def _send_weekly(conn, cfg, item, sender, body, queue_id, username):
     # The public acknowledgement is best-effort: the code is already delivered,
     # so a failure here must not mark the item for retry (that would re-PM).
     ack_note = None
-    ack = cfg.templates.get("public_ack")
-    if ack and item["trigger_type"] == "comment" and item["parent_id"]:
-        _subject, ack_body = ack.render(username=username, app_name=cfg.name, code="")
+    ack_body = item["ack_body"]
+    if ack_body and item["trigger_type"] == "comment" and item["parent_id"]:
         try:
             sender.reply_to_comment(item["parent_id"], ack_body)
             with transaction(conn):

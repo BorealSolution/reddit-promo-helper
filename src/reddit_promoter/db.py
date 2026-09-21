@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS queue (
     parent_id      TEXT,
     subject        TEXT,
     draft_body     TEXT NOT NULL,
+    ack_body       TEXT,
     preview_code   TEXT,
     allocated_code TEXT,
     status         TEXT NOT NULL DEFAULT 'pending',

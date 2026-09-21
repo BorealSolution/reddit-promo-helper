@@ -127,6 +127,13 @@ def process_comment(conn: sqlite3.Connection, cfg: AppConfig, item: IncomingComm
             return queue_id
 
         subject, body, preview = _draft_weekly(conn, cfg, username)
+        # Choose the public wording now, not at send time: the reviewer must
+        # see the exact text that will be posted under their own account.
+        ack = cfg.templates.get("public_ack")
+        ack_body = None
+        if ack:
+            _s, ack_body = ack.render(username=username, app_name=cfg.name,
+                                      code="")
         queue_id = store.enqueue(
             conn,
             app_id=cfg.app_id,
@@ -141,6 +148,7 @@ def process_comment(conn: sqlite3.Connection, cfg: AppConfig, item: IncomingComm
             trigger_url=item.permalink,
             parent_id=item.item_id,   # the public ack replies to this comment
             preview_code=preview,
+            ack_body=ack_body,
         )
         store.mark_processed(conn, item.item_id, "comment", app_id=cfg.app_id,
                              username=username, action="queued_weekly_code")

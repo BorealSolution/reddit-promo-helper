@@ -67,6 +67,7 @@ python promoter.py poll --keep-unread              # don't mark the inbox read
 python promoter.py review [--app sleepbound]       # the dashboard
 python promoter.py review --offline                # review without contacting Reddit
 python promoter.py check-dm                        # what the API can do with DMs
+python promoter.py post-template --app sleepbound  # the required post format
 python promoter.py stats [--app sleepbound]
 python promoter.py reset-demo                      # clear local db (keeps a backup)
 ```
@@ -88,6 +89,7 @@ contacts Reddit. `--dry-run` changes nothing at all.
 |---|---|
 | `s` | send |
 | `e` | edit the draft, then send |
+| `r` | reword the public reply (pick another wording) |
 | `k` | skip for now (stays pending, comes back next run) |
 | `d` | drop (mark handled, send nothing, release any reserved code) |
 | `b` | block this user for this app |
@@ -125,6 +127,27 @@ Do this before pointing it at a real post.
 7. Reply to that PM from the second account, then `poll` again and confirm the
    reply shows up as a queue item. **This is the step that validates the whole
    proof loop** — see the DM caveat below.
+
+## Posting
+
+r/droidappshowcase requires an exact post format. It lives in
+`apps/sleepbound/app.yaml` under `post_template`, so the wording stays in one
+place:
+
+```bash
+python promoter.py post-template --app sleepbound          # formatted
+python promoter.py post-template --app sleepbound --raw    # for copy-paste
+```
+
+The tool never posts. Create the post yourself, with the image, then `watch`
+its URL.
+
+The public "sent you a DM" reply rotates at random between the wordings listed
+under `templates.public_ack.bodies`, so a thread of them does not read as one
+bot repeating a sentence. The wording is chosen **when the draft is made**, not
+at send time, so the dashboard shows the exact text that will be posted under
+your account; `r` picks a different one. No wording may contain `{code}` —
+there is a test enforcing that.
 
 ## Adding another app
 

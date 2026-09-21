@@ -173,6 +173,12 @@ def _render_item(console: Console, conn, item, cfg: AppConfig | None,
                               if action != REVIEW_ONLY else "[bold]no draft",
                         border_style=colour))
 
+    if item["ack_body"]:
+        console.print(Panel(Text(item["ack_body"]),
+                            title="[bold]public reply on their comment "
+                                  "(no code)",
+                            border_style="green"))
+
     if action in (WEEKLY_CODE, LIFETIME_CODE) and app_id:
         pool = item["pool"]
         reserved = item["allocated_code"]
@@ -236,9 +242,14 @@ def review(console: Console, conn: sqlite3.Connection, configs: dict[str, AppCon
         _render_item(console, conn, item, cfg, f"{index + 1}/{len(items)}",
                      exclude=spent if dry_run else None)
 
-        choices = "s=send  e=edit+send  k=skip  d=drop  b=block  a=assign app  q=quit"
+        choices = ("s=send  e=edit+send  k=skip  d=drop  b=block  "
+                   "a=assign app  q=quit")
+        if item["ack_body"]:
+            choices = ("s=send  e=edit+send  r=reword public reply  k=skip  "
+                       "d=drop  b=block  a=assign app  q=quit")
         console.print(f"\n[dim]{choices}[/]")
-        key = Prompt.ask("action", choices=["s", "e", "k", "d", "b", "a", "q"],
+        key = Prompt.ask("action",
+                         choices=["s", "e", "r", "k", "d", "b", "a", "q"],
                          default="k", show_choices=False).strip().lower()
 
         if key == "q":
@@ -267,6 +278,20 @@ def review(console: Console, conn: sqlite3.Connection, configs: dict[str, AppCon
                           f"{item['app_id']}.[/]")
             index += 1
             continue
+
+        if key == "r":
+            ack = cfg.templates.get("public_ack") if cfg else None
+            if not ack or ack.variant_count < 2:
+                console.print("[yellow]Only one wording is configured.[/]")
+                continue
+            for _ in range(8):   # avoid handing back the same line
+                _s, fresh = ack.render(username=item["username"],
+                                       app_name=cfg.name, code="")
+                if fresh != item["ack_body"]:
+                    break
+            store.update_ack(conn, item["id"], fresh)
+            conn.commit()
+            continue   # re-render with the new wording
 
         if key == "a":
             available = [a["app_id"] for a in store.list_apps(conn)]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import random
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -34,19 +35,39 @@ class CodeFile:
 
 @dataclass(frozen=True)
 class Template:
+    """A message template, optionally with several interchangeable wordings.
+
+    A template built from `bodies:` picks one at random each time it is
+    rendered, so repeated public replies do not read as a bot posting the
+    same sentence over and over.
+    """
+
     kind: str
-    body: str
+    bodies: tuple[str, ...]
     subject: str | None = None
 
-    def render(self, **values: str) -> tuple[str | None, str]:
+    @property
+    def body(self) -> str:
+        return self.bodies[0]
+
+    @property
+    def variant_count(self) -> int:
+        return len(self.bodies)
+
+    def render(self, *, variant: int | None = None,
+               **values: str) -> tuple[str | None, str]:
         """Return (subject, body) with placeholders filled in.
 
+        `variant` picks a specific wording; omitted, one is chosen at random.
         Unknown placeholders raise rather than silently producing a message
         with a literal `{code}` in it.
         """
+        chosen = (self.bodies[variant % len(self.bodies)]
+                  if variant is not None
+                  else random.choice(self.bodies))
         try:
             subject = self.subject.format(**values) if self.subject else None
-            body = self.body.format(**values)
+            body = chosen.format(**values)
         except KeyError as exc:
             raise ConfigError(f"template references unknown placeholder {exc}") from exc
         return subject, body.strip()
@@ -63,6 +84,7 @@ class AppConfig:
     templates: dict[str, Template]
     config_path: Path
     app_dir: Path
+    post_template: dict | None = None
     gemini_model: str = "gemini-2.5-flash"
 
     def template(self, key: str) -> Template:
@@ -117,9 +139,20 @@ def load_app_config(app_id: str, apps_dir: Path | None = None) -> AppConfig:
 
     templates = {}
     for key, entry in (data.get("templates") or {}).items():
+        # `body:` for a single wording, `bodies:` for a rotating set.
+        if "bodies" in entry:
+            bodies = tuple(entry["bodies"])
+            if not bodies:
+                raise ConfigError(f"{config_path}: template '{key}' has an "
+                                  f"empty 'bodies' list")
+        elif "body" in entry:
+            bodies = (entry["body"],)
+        else:
+            raise ConfigError(f"{config_path}: template '{key}' needs either "
+                              f"'body' or 'bodies'")
         templates[key] = Template(
             kind=entry.get("kind", "comment_reply"),
-            body=entry["body"],
+            bodies=bodies,
             subject=entry.get("subject"),
         )
 
@@ -133,6 +166,7 @@ def load_app_config(app_id: str, apps_dir: Path | None = None) -> AppConfig:
         templates=templates,
         config_path=config_path,
         app_dir=app_dir,
+        post_template=data.get("post_template"),
         gemini_model=data.get("gemini_model", "gemini-2.5-flash"),
     )
 

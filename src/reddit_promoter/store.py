@@ -362,7 +362,7 @@ def save_classification(conn: sqlite3.Connection, item_id: str, intent: str,
 def enqueue(conn: sqlite3.Connection, *, app_id, username, action, draft_body,
             trigger_type, trigger_id, pool=None, trigger_body=None,
             trigger_url=None, parent_id=None, subject=None,
-            preview_code=None) -> int:
+            preview_code=None, ack_body=None) -> int:
     """Add a pending action for review. No code is allocated here."""
     existing = conn.execute(
         "SELECT id FROM queue WHERE trigger_id = ? AND action = ? AND status = ?",
@@ -375,11 +375,12 @@ def enqueue(conn: sqlite3.Connection, *, app_id, username, action, draft_body,
     cur = conn.execute(
         "INSERT INTO queue (app_id, username, action, pool, trigger_type, "
         "  trigger_id, trigger_body, trigger_url, parent_id, subject, "
-        "  draft_body, preview_code, status, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "  draft_body, ack_body, preview_code, status, created_at, "
+        "  updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (app_id, username, action, pool, trigger_type, trigger_id, trigger_body,
-         trigger_url, parent_id, subject, draft_body, preview_code, PENDING,
-         now, now),
+         trigger_url, parent_id, subject, draft_body, ack_body, preview_code,
+         PENDING, now, now),
     )
     return cur.lastrowid
 
@@ -426,6 +427,14 @@ def set_queue_status(conn: sqlite3.Connection, queue_id: int, status: str, *,
 def update_draft(conn: sqlite3.Connection, queue_id: int, body: str) -> None:
     conn.execute(
         "UPDATE queue SET draft_body = ?, updated_at = ? WHERE id = ?",
+        (body, utcnow(), queue_id),
+    )
+
+
+def update_ack(conn: sqlite3.Connection, queue_id: int, body: str) -> None:
+    """Swap in a different wording for the public acknowledgement."""
+    conn.execute(
+        "UPDATE queue SET ack_body = ?, updated_at = ? WHERE id = ?",
         (body, utcnow(), queue_id),
     )
 

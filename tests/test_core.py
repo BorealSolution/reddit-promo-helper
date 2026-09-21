@@ -413,6 +413,75 @@ class TestMessageFlow(Base):
             engine.attribute_app(self.conn, "alice", ["sleepbound", "other"]))
 
 
+class TestPublicAckRotation(Base):
+    def _queued(self, username="alice", n=1):
+        qid = engine.process_comment(self.conn, self.cfg,
+                                     self.comment(n, username, "code"), "me")
+        return qid, self.queue_row(qid)
+
+    def test_the_wording_is_chosen_at_draft_time(self):
+        _qid, item = self._queued()
+        self.assertTrue(item["ack_body"])
+
+    def test_what_is_shown_is_what_is_sent(self):
+        qid, item = self._queued()
+        shown = item["ack_body"]
+        actions.send_item(self.conn, self.cfg, item, self.sender)
+        posted = [s for s in self.sender.sent if s.kind == "comment_reply"]
+        self.assertEqual(len(posted), 1)
+        self.assertEqual(posted[0].body, shown)
+
+    def test_wordings_vary_across_users(self):
+        seen = set()
+        for i in range(40):
+            _qid, item = self._queued(f"user{i}", n=i)
+            seen.add(item["ack_body"])
+        # With 10 configured wordings, 40 draws should not land on one.
+        self.assertGreater(len(seen), 1)
+
+    def test_every_wording_is_available(self):
+        tpl = self.cfg.template("public_ack")
+        rendered = {tpl.render(variant=i, username="a", app_name="X", code="")[1]
+                    for i in range(tpl.variant_count)}
+        self.assertEqual(len(rendered), tpl.variant_count)
+
+    def test_no_wording_can_leak_a_code(self):
+        tpl = self.cfg.template("public_ack")
+        for i in range(tpl.variant_count):
+            _s, body = tpl.render(variant=i, username="alice",
+                                  app_name="Sleepbound", code="SECRETCODE123")
+            self.assertNotIn("SECRETCODE123", body)
+
+    def test_rerolling_changes_the_stored_wording(self):
+        qid, item = self._queued()
+        tpl = self.cfg.template("public_ack")
+        other = next(tpl.render(variant=i, username="alice", app_name="X",
+                                code="")[1]
+                     for i in range(tpl.variant_count)
+                     if tpl.render(variant=i, username="alice", app_name="X",
+                                   code="")[1] != item["ack_body"])
+        store.update_ack(self.conn, qid, other)
+        self.conn.commit()
+        self.assertEqual(self.queue_row(qid)["ack_body"], other)
+
+    def test_a_single_body_template_still_works(self):
+        tpl = self.cfg.template("weekly_code")
+        self.assertEqual(tpl.variant_count, 1)
+        a = tpl.render(username="x", code="C", app_name="A")[1]
+        b = tpl.render(username="x", code="C", app_name="A")[1]
+        self.assertEqual(a, b)
+
+
+class TestPostTemplate(Base):
+    def test_the_required_post_format_is_configured(self):
+        tpl = self.cfg.post_template
+        self.assertIsNotNone(tpl)
+        self.assertEqual(tpl["subreddit"], "droidappshowcase")
+        self.assertIn("SleepBound", tpl["title"])
+        self.assertIn('Comment "code" down below', tpl["body"])
+        self.assertIn("play.google.com", tpl["body"])
+
+
 class TestUrlExtraction(unittest.TestCase):
     def test_finds_each_url_once_in_order(self):
         text = ("proof: https://imgur.com/a/abc and https://example.com/x. "

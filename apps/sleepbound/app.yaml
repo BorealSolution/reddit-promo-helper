@@ -30,9 +30,26 @@ low_stock_threshold:
   weekly: 25
   lifetime: 10
 
+# r/droidappshowcase requires this exact post format. The tool never posts -
+# this is kept here so the wording stays in one place and I can copy it out
+# each week. `promoter.py post-template --app sleepbound` prints it.
+post_template:
+  subreddit: droidappshowcase
+  title: SleepBound - White Noise, Rain and Nature
+  body: |
+    App Name: SleepBound: White Noise & Rain
+    What it does: SleepBound is a sleep sound mixer: you layer rain, ocean, brown noise, fan and others together and control each one's volume individually, like a real sound machine. A sleep timer fades the whole mix out gently after anywhere from 15 minutes to 8 hours, and playback continues with the screen off.
+    Key Features:
+    Layer multiple sounds at once with per-sound volume: nature, noise colours (white/pink/brown/grey), city ambience, and binaural beats
+    Sleep timer from 15 minutes to 8 hours that fades out gradually instead of cutting off abruptly
+    Fully offline with no account or signup. Every sound is generated or stored on the device
+    Goal: Growing users
+    Giveaway: Comment "code" down below
+    Link: https://play.google.com/store/apps/details?id=com.sleepbound.app
+
 # Message templates. Placeholders: {username} {code} {app_name}
 # Weekly codes and lifetime codes both go out as private messages.
-# The public reply is a no-code "check your DMs" acknowledgement.
+# A template with `bodies:` rotates at random between the listed wordings.
 templates:
   weekly_code:
     kind: private_message
@@ -44,10 +61,21 @@ templates:
 
       If you enjoy it, an honest review helps a lot. Reply to this message with a screenshot of your review and I'll send you a lifetime code.
 
+  # The public "check your DMs" reply. Never contains a code. Rotated so a
+  # thread of these does not read as one bot repeating itself.
   public_ack:
     kind: comment_reply
-    body: |
-      Sent you a DM with your code! Check your Reddit inbox (messages, not chat).
+    bodies:
+      - Sent you a DM with your code!
+      - Just DM'd you the code, enjoy!
+      - Sent! It's in your Reddit inbox under messages, not chat.
+      - Code's on its way, check your messages.
+      - Just sent it over, thanks for the interest!
+      - DM'd you. Check your Reddit inbox (messages, not chat).
+      - Sent it your way!
+      - Done, check your DMs.
+      - Just messaged you the code, hope you like it!
+      - Sent you a message with the code, enjoy.
 
   lifetime_code:
     kind: private_message_reply

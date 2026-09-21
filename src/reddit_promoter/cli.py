@@ -7,6 +7,7 @@ import re
 import sys
 
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
 
 from . import actions, dashboard, dmcheck, engine, store
@@ -314,6 +315,41 @@ def cmd_stats(args) -> int:
     return 0
 
 
+def cmd_post_template(args) -> int:
+    """Print the post format for an app, ready to paste into Reddit.
+
+    The tool never posts - r/droidappshowcase requires an exact format, so
+    this keeps the wording in one place instead of in my notes.
+    """
+    try:
+        cfg = load_app_config(args.app)
+    except ConfigError as exc:
+        console.print(f"[red]{exc}[/]")
+        return 1
+
+    tpl = cfg.post_template
+    if not tpl:
+        console.print(f"[yellow]{cfg.app_id} has no post_template in "
+                      f"app.yaml[/]")
+        return 1
+
+    sub = tpl.get("subreddit") or (cfg.subreddits[0] if cfg.subreddits else "?")
+    if args.raw:
+        print(tpl.get("title", ""))
+        print()
+        print(tpl.get("body", ""))
+        return 0
+
+    console.print(f"[dim]r/{sub}[/]")
+    console.print(Panel(tpl.get("title", ""), title="[bold]title",
+                        border_style="blue"))
+    console.print(Panel(tpl.get("body", "").rstrip(), title="[bold]body",
+                        border_style="blue"))
+    console.print("[dim]--raw prints it unformatted for copy-paste. "
+                  "Remember the image.[/]")
+    return 0
+
+
 def cmd_check_dm(args) -> int:
     """Report what the Reddit API can actually do with direct messages."""
     from .sources.reddit_source import RedditAuthError
@@ -391,6 +427,13 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("check-dm",
                        help="report what the API can do with direct messages")
     p.set_defaults(func=cmd_check_dm)
+
+    p = sub.add_parser("post-template",
+                       help="print an app's required post format")
+    p.add_argument("--app", required=True)
+    p.add_argument("--raw", action="store_true",
+                   help="plain text, no formatting")
+    p.set_defaults(func=cmd_post_template)
 
     p = sub.add_parser("stats", help="per-app summary")
     p.add_argument("--app")
