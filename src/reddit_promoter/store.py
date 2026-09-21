@@ -447,6 +447,23 @@ def reassign_app(conn: sqlite3.Connection, queue_id: int, app_id: str) -> None:
     log(conn, "queue_app_assigned", app_id=app_id, detail=f"queue:{queue_id}")
 
 
+def assistance_count(conn: sqlite3.Connection, app_id: str | None = None) -> int:
+    """Pending items whose message reads as a question or could not be read.
+
+    These are the ones where somebody is probably stuck and waiting on a
+    human, so the home screen calls them out separately from the routine
+    code requests.
+    """
+    sql = ("SELECT COUNT(*) FROM queue q "
+           "JOIN classifications c ON c.item_id = q.trigger_id "
+           "WHERE q.status IN (?, ?) AND c.intent IN ('question', 'unclear')")
+    params: list = [PENDING, NEEDS_RETRY]
+    if app_id:
+        sql += " AND q.app_id = ?"
+        params.append(app_id)
+    return conn.execute(sql, params).fetchone()[0]
+
+
 def pending_count(conn: sqlite3.Connection, app_id: str | None = None) -> int:
     sql = "SELECT COUNT(*) FROM queue WHERE status IN (?, ?)"
     params: list = [PENDING, NEEDS_RETRY]

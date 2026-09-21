@@ -55,11 +55,11 @@ templates:
     kind: private_message
     subject: Your {app_name} promo code
     body: |
-      Thanks for the interest, u/{username}! Here's your {app_name} promo code: **{code}**
+      Hello. Thank you for your interest! Here is the promo code that you can use: {code}
 
-      To redeem: open the Play Store, tap your profile icon -> Payments & subscriptions -> Redeem code.
+      Apply it to the weekly subscription and it should work!
 
-      If you enjoy it, an honest review helps a lot. Reply to this message with a screenshot of your review and I'll send you a lifetime code.
+      Also, due to popular demand, I would be glad to bump you to a lifetime subscription if you leave a review on the play store and send me a screenshot.
 
   # The public "check your DMs" reply. Never contains a code. Rotated so a
   # thread of these does not read as one bot repeating itself.
@@ -81,14 +81,14 @@ templates:
     kind: private_message_reply
     subject: Your lifetime {app_name} code
     body: |
-      Thanks for the review, u/{username}! Here's your lifetime {app_name} code: **{code}**
+      Here is your lifetime code:
 
-      Same redemption steps: Play Store -> profile icon -> Payments & subscriptions -> Redeem code.
+      {code}
 
-      Enjoy!
+      Thank you for your review!
 
   duplicate_query:
     kind: private_message_reply
     subject: About your {app_name} code
     body: |
-      Hi u/{username} - looks like I already sent you a code for {app_name}. Did it not work, or is this a different request?
+      Seems like you already have a code. Are you looking for a second code for someone else?

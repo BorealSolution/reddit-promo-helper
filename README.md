@@ -162,6 +162,21 @@ No code changes needed:
 
 Duplicate checks, code pools, user state, and blocks are all per app.
 
+## When someone needs help
+
+Not every queue item is a code to send. A private message that Gemini reads as
+a question, or cannot read confidently, is surfaced with no draft and labelled:
+
+- **NEEDS YOUR HELP** - reads as a question; someone is probably stuck
+- **unreadable - please look** - low confidence, malformed response, or an API
+  failure; never guessed at
+- **asked for a code by DM** - a code request that arrived by message rather
+  than as a comment on the post
+
+The home screen counts these separately from the routine queue, so a person
+waiting on an answer does not get buried under code requests. Reply with `e`,
+or clear it with `d`.
+
 ## Safety properties
 
 These are enforced in code and covered by `tests/test_core.py`:

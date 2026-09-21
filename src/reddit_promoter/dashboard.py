@@ -90,6 +90,10 @@ def home(console: Console, conn: sqlite3.Connection, configs: dict[str, AppConfi
         body.add_row(Text(f"watched posts: {watches}", style="dim"))
         body.add_row(Text(f"pending review: {pending}",
                           style="bold" if pending else "dim"))
+        needs_help = store.assistance_count(conn, app_id)
+        if needs_help:
+            body.add_row(Text(f"of those, {needs_help} may need help from you",
+                              style="bold yellow"))
 
         console.print(Panel(body, title=f"[bold]{app['name']}[/] ({app_id})",
                             border_style="blue"))
@@ -119,10 +123,30 @@ def _history(conn, app_id: str | None, username: str) -> Text:
     return out
 
 
+def _item_label(conn, item) -> tuple[str, str]:
+    """How this item is announced. An unactionable item is not all the same
+    thing: someone stuck on a broken code needs me far more urgently than an
+    off-topic message does, so say which it is.
+    """
+    action = item["action"]
+    if action != REVIEW_ONLY:
+        return ACTION_LABELS.get(action, (action, "white"))
+
+    row = store.get_classification(conn, item["trigger_id"])
+    intent = row["intent"] if row else None
+    if intent == "question":
+        return "NEEDS YOUR HELP", "bold yellow"
+    if intent == "unclear":
+        return "unreadable - please look", "yellow"
+    if intent == "code_request":
+        return "asked for a code by DM", "cyan"
+    return ACTION_LABELS[REVIEW_ONLY]
+
+
 def _render_item(console: Console, conn, item, cfg: AppConfig | None,
                  position: str, exclude: set[str] | None = None) -> None:
     action = item["action"]
-    label, colour = ACTION_LABELS.get(action, (action, "white"))
+    label, colour = _item_label(conn, item)
     app_id = item["app_id"]
 
     header = Text()
@@ -167,11 +191,15 @@ def _render_item(console: Console, conn, item, cfg: AppConfig | None,
     if item["subject"]:
         console.print(Text(f"  subject: {item['subject']}", style="dim"))
 
+    if action == REVIEW_ONLY:
+        console.print(Text("  nothing is drafted for this one - read it and "
+                           "reply with [e], or drop it with [d]", style="dim"))
+
     draft_style = "white" if action != REVIEW_ONLY else "dim italic"
     console.print(Panel(Text(item["draft_body"], style=draft_style),
                         title="[bold]draft reply (private message)"
                               if action != REVIEW_ONLY else "[bold]no draft",
-                        border_style=colour))
+                        border_style=colour.replace("bold ", "")))
 
     if item["ack_body"]:
         console.print(Panel(Text(item["ack_body"]),

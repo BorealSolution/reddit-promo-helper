@@ -472,6 +472,79 @@ class TestPublicAckRotation(Base):
         self.assertEqual(a, b)
 
 
+class TestAssistanceFlagging(Base):
+    """Messages where someone is stuck must stand out from routine traffic."""
+
+    def _pm(self, n, body):
+        return engine.process_message(self.conn, self.cfg,
+                                      self.message(n, f"u{n}", body),
+                                      self.classifier, app_id="sleepbound")
+
+    def test_a_question_is_counted_as_needing_help(self):
+        self._pm(1, "how do I redeem this? what do I tap")
+        self.assertEqual(store.assistance_count(self.conn, "sleepbound"), 1)
+
+    def test_an_unreadable_message_is_counted(self):
+        self._pm(1, "zzz")            # offline classifier -> low confidence
+        self.assertEqual(store.assistance_count(self.conn, "sleepbound"), 1)
+
+    def test_a_routine_code_send_is_not_counted(self):
+        engine.process_comment(self.conn, self.cfg,
+                               self.comment(1, "alice", "code please"), "me")
+        self.assertEqual(store.assistance_count(self.conn, "sleepbound"), 0)
+
+    def test_resolved_items_stop_being_counted(self):
+        qid = self._pm(1, "how do I redeem this? what do I tap")
+        self.assertEqual(store.assistance_count(self.conn, "sleepbound"), 1)
+        actions.drop_item(self.conn, qid, self.queue_row(qid))
+        self.assertEqual(store.assistance_count(self.conn, "sleepbound"), 0)
+
+    def test_labels_distinguish_the_kinds_of_unactionable_item(self):
+        from reddit_promoter.dashboard import _item_label
+        qid = self._pm(1, "how do I redeem this? what do I tap")
+        label, _style = _item_label(self.conn, self.queue_row(qid))
+        self.assertEqual(label, "NEEDS YOUR HELP")
+
+        qid2 = self._pm(2, "zzz")
+        label2, _s2 = _item_label(self.conn, self.queue_row(qid2))
+        self.assertEqual(label2, "unreadable - please look")
+
+    def test_a_sendable_item_keeps_its_own_label(self):
+        from reddit_promoter.dashboard import _item_label
+        qid = engine.process_comment(self.conn, self.cfg,
+                                     self.comment(1, "alice", "code"), "me")
+        label, _style = _item_label(self.conn, self.queue_row(qid))
+        self.assertEqual(label, "weekly code")
+
+
+class TestConfiguredTemplates(Base):
+    """The wording is the operator's; these pin the mechanics around it."""
+
+    def test_weekly_pm_carries_exactly_one_code(self):
+        _s, body = self.cfg.template("weekly_code").render(
+            username="alice", code="TESTCODE", app_name="Sleepbound")
+        self.assertEqual(body.count("TESTCODE"), 1)
+
+    def test_lifetime_pm_carries_exactly_one_code(self):
+        _s, body = self.cfg.template("lifetime_code").render(
+            username="alice", code="TESTCODE", app_name="Sleepbound")
+        self.assertEqual(body.count("TESTCODE"), 1)
+
+    def test_duplicate_query_carries_no_code(self):
+        _s, body = self.cfg.template("duplicate_query").render(
+            username="alice", code="TESTCODE", app_name="Sleepbound")
+        self.assertNotIn("TESTCODE", body)
+
+    def test_no_template_still_contains_a_literal_example_code(self):
+        # The wording was supplied with real codes pasted in; they must have
+        # been replaced by the placeholder, or every user gets the same code.
+        leaked = ("AAAAAAAAOLDWEEKLYAAAAAA", "BBBBBBBBOLDLIFETIMEBBBB")
+        for name, tpl in self.cfg.templates.items():
+            for body in tpl.bodies:
+                for code in leaked:
+                    self.assertNotIn(code, body, f"{name} still has {code}")
+
+
 class TestPostTemplate(Base):
     def test_the_required_post_format_is_configured(self):
         tpl = self.cfg.post_template
