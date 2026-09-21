@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import pathlib
 import re
 import sys
 import time
@@ -464,17 +465,40 @@ def cmd_backfill(args) -> int:
     conn = _open_db()
     store.register_app(conn, cfg)
 
-    # Usernames given on the command line need no Reddit access.
-    if args.users:
+    # Usernames given by hand need no Reddit access at all.
+    raw_names = args.users or ""
+    if args.users_file:
+        path = pathlib.Path(args.users_file)
+        if not path.exists():
+            console.print(f"[red]no such file: {path}[/]")
+            return 1
+        # One per line, or comma-separated, or both. Blank lines and lines
+        # starting with # are ignored so the list can be annotated.
+        lines = [ln.split("#", 1)[0] for ln in path.read_text(
+            encoding="utf-8").splitlines()]
+        raw_names = raw_names + " " + " ".join(lines)
+
+    if raw_names.strip():
         names = backfill.normalise_usernames(
-            [n for n in re.split(r"[,\s]+", args.users) if n])
+            [n for n in re.split(r"[,\s]+", raw_names) if n])
+        if not names:
+            console.print("[red]no usernames found[/]")
+            return 1
+        already = [n for n in names
+                   if store.get_user(conn, cfg.app_id, n) is not None]
         if not args.apply:
             console.print(f"[yellow]Would mark {len(names)} user(s) as already "
-                          f"served:[/] " + ", ".join(f"u/{n}" for n in names))
-            console.print("[dim]re-run with --apply to write it[/]")
+                          f"served:[/]")
+            for n in names:
+                note = "  (already recorded)" if n in already else ""
+                console.print(f"  u/{n}{note}")
+            console.print("[dim]re-run with the same command plus --apply to "
+                          "write it[/]")
             return 0
         done = backfill.mark_users_served(conn, cfg.app_id, names)
-        console.print(f"[green]Marked {done} user(s) as already served.[/]")
+        console.print(f"[green]Marked {done} user(s) as already served.[/] "
+                      f"They will now get a duplicate query instead of a "
+                      f"second code.")
         return 0
 
     from .sources.reddit_source import (RedditAuthError, build_reddit,
@@ -692,8 +716,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit", type=int, default=500,
                    help="how many sent messages to scan (default 500)")
     p.add_argument("--users",
-                   help="comma-separated usernames to mark as already served, "
-                        "instead of scanning the sent folder")
+                   help="comma- or space-separated usernames to mark as "
+                        "already served")
+    p.add_argument("--users-file",
+                   help="a text file of usernames, one per line (# comments "
+                        "allowed)")
     p.add_argument("--apply", action="store_true",
                    help="actually write it (default is a preview)")
     p.set_defaults(func=cmd_backfill)

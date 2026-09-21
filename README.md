@@ -117,13 +117,23 @@ python promoter.py stats
 The duplicate check only knows what this tool recorded. Anyone you gave a code
 to by hand looks brand new and would be served twice:
 
+Open <https://www.reddit.com/message/sent/>, note who you already sent a code
+to, and put the names in a file (one per line; `#` comments allowed):
+
 ```bash
-python promoter.py backfill --app sleepbound --users alice,bob --apply
+python promoter.py backfill --app sleepbound --users-file past-recipients.txt
+python promoter.py backfill --app sleepbound --users-file past-recipients.txt --apply
 ```
 
-With Reddit credentials it can read this out of your sent folder
-automatically; without them, list the usernames. Do this **before** the first
-review session.
+Or inline for a few: `--users alice,bob,carol`. `u/alice` and `/u/alice` work
+too. The first command previews and writes nothing; only `--apply` records.
+Re-running is harmless, so add names as you remember them.
+
+Once Reddit API access is approved, `backfill --app sleepbound` with no
+`--users` reads your sent folder and works all this out by itself.
+
+Do this **before** the first review session: anyone missing gets a second
+code, and that cannot be undone afterwards.
 
 ## Clipboard support
 
