@@ -8,6 +8,12 @@ data/
 apps/**/codes/
 *.csv
 
+# Working lists: real usernames and real codes, never commit these
+past-recipients.txt
+*-recipients.txt
+spent-codes.txt
+*-codes.txt
+
 # Post images
 apps/**/*.png
 apps/**/*.jpg

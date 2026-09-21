@@ -135,6 +135,29 @@ Once Reddit API access is approved, `backfill --app sleepbound` with no
 Do this **before** the first review session: anyone missing gets a second
 code, and that cannot be undone afterwards.
 
+### If you have already spent some codes
+
+Deleting a used code from a CSV does **not** retire it. Import is additive:
+the code is already in the database and will still be handed out. `retire-codes`
+is the only thing that stops that.
+
+```bash
+# codes you have already given away, one per line
+# (optionally followed by who got it, to record them too)
+python promoter.py retire-codes --app sleepbound --codes-file spent-codes.txt
+python promoter.py retire-codes --app sleepbound --codes-file spent-codes.txt --apply
+
+# or, if you track spend by deleting rows from the CSV:
+python promoter.py retire-codes --app sleepbound --missing --apply
+```
+
+`--missing` retires every unused code that is in the database but no longer in
+the CSVs. `import-codes` warns whenever that gap appears.
+
+Marking a *user* as served and retiring a *code* are different things, and
+both matter: the first stops them getting a second code, the second stops a
+dead code going to somebody else.
+
 ## Clipboard support
 
 | OS | Backend | Notes |

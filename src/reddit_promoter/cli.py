@@ -114,6 +114,22 @@ def cmd_import_codes(args) -> int:
     counts = store.pool_counts(conn, cfg.app_id)
     for pool, c in sorted(counts.items()):
         console.print(f"  {pool}: [bold]{c['remaining']}[/] unused of {c['total']}")
+
+    # Deleting a used code from a CSV is a natural way to track spend by
+    # hand, but import is additive: the code is still in the database and
+    # will still be handed out. Say so rather than letting it happen.
+    orphans = backfill.codes_missing_from_files(conn, cfg)
+    issuable = [r for r in orphans if not r["used_by"]]
+    if orphans:
+        console.print(f"\n[yellow]{len(orphans)} code(s) in the database are "
+                      f"no longer in the CSV files.[/]")
+        if issuable:
+            console.print(f"[bold red]{len(issuable)} of those are still "
+                          f"marked unused and WILL be handed out.[/]")
+            console.print("[dim]If you deleted them because they were already "
+                          "given away, retire them:[/]")
+            console.print("[dim]  promoter.py retire-codes --app "
+                          f"{cfg.app_id} --missing --apply[/]")
     return 0
 
 
@@ -576,6 +592,86 @@ def cmd_backfill(args) -> int:
     return 0
 
 
+def cmd_retire_codes(args) -> int:
+    """Mark specific codes as already spent so they are never issued.
+
+    Needed because deleting a code from a CSV does not remove it from the
+    database - import is additive, so the code stays issuable.
+    """
+    try:
+        cfg = load_app_config(args.app)
+    except ConfigError as exc:
+        console.print(f"[red]{exc}[/]")
+        return 1
+
+    conn = _open_db()
+    store.register_app(conn, cfg)
+
+    pairs: list[tuple[str, str | None]] = []
+
+    if args.missing:
+        orphans = backfill.codes_missing_from_files(conn, cfg)
+        pairs += [(r["code"], None) for r in orphans if not r["used_by"]]
+        if not pairs:
+            console.print("[green]Nothing to do: every unused code in the "
+                          "database is still present in the CSVs.[/]")
+            return 0
+        console.print(f"[dim]{len(pairs)} code(s) are in the database but no "
+                      f"longer in the CSVs[/]")
+
+    if args.codes:
+        pairs += backfill.parse_codes_file(args.codes.replace(",", "\n"))
+    if args.codes_file:
+        path = pathlib.Path(args.codes_file)
+        if not path.exists():
+            console.print(f"[red]no such file: {path}[/]")
+            return 1
+        pairs += backfill.parse_codes_file(path.read_text(encoding="utf-8"))
+
+    if not pairs:
+        console.print("[red]Nothing given. Use --codes, --codes-file or "
+                      "--missing.[/]")
+        return 1
+
+    report = backfill.retire_codes(conn, cfg.app_id, pairs, apply=args.apply)
+
+    if report.malformed:
+        console.print(f"[yellow]{len(report.malformed)} line(s) were not "
+                      f"23-character codes and were skipped:[/] "
+                      + ", ".join(report.malformed[:5]))
+    if report.not_in_pool:
+        console.print(f"[dim]{len(report.not_in_pool)} code(s) are not in this "
+                      f"app's pool at all (an older batch) - nothing to "
+                      f"retire[/]")
+    if report.already_retired:
+        console.print(f"[dim]{len(report.already_retired)} code(s) were "
+                      f"already marked used[/]")
+    for conflict in report.conflicts:
+        console.print(f"[yellow]conflict: {conflict}[/]")
+
+    if not report.retired:
+        console.print("[green]No codes needed retiring.[/]")
+        return 0
+
+    verb = "Retired" if args.apply else "Would retire"
+    console.print(f"[bold]{verb} {len(report.retired)} code(s)[/]")
+    for code, holder in report.retired[:20]:
+        who = "" if holder == backfill.SPENT_UNKNOWN else f"  -> u/{holder}"
+        console.print(f"  {code}{who}")
+    if len(report.retired) > 20:
+        console.print(f"  ... and {len(report.retired) - 20} more")
+
+    if not args.apply:
+        console.print("[dim]re-run with --apply to write it[/]")
+        return 0
+
+    counts = store.pool_counts(conn, cfg.app_id)
+    for pool, c in sorted(counts.items()):
+        console.print(f"  {pool}: [bold]{c['remaining']}[/] still available "
+                      f"of {c['total']}")
+    return 0
+
+
 def cmd_post_template(args) -> int:
     """Print the post format for an app, ready to paste into Reddit.
 
@@ -724,6 +820,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--apply", action="store_true",
                    help="actually write it (default is a preview)")
     p.set_defaults(func=cmd_backfill)
+
+    p = sub.add_parser("retire-codes",
+                       help="mark specific codes as already spent")
+    p.add_argument("--app", required=True)
+    p.add_argument("--codes", help="comma-separated codes")
+    p.add_argument("--codes-file",
+                   help="a file of codes, one per line, optionally followed "
+                        "by the username who got it")
+    p.add_argument("--missing", action="store_true",
+                   help="retire every unused code that is in the database "
+                        "but no longer in the CSV files")
+    p.add_argument("--apply", action="store_true",
+                   help="actually write it (default is a preview)")
+    p.set_defaults(func=cmd_retire_codes)
 
     p = sub.add_parser("post-template",
                        help="print an app's required post format")

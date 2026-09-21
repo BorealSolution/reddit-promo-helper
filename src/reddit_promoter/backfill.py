@@ -207,3 +207,111 @@ def mark_users_served(conn: sqlite3.Connection, app_id: str,
             log(conn, "marked_served", app_id=app_id, username=username)
             done += 1
     return done
+
+
+# Marks a code as spent when the recipient is not known.
+SPENT_UNKNOWN = "(spent before tracking)"
+
+
+@dataclass
+class RetireReport:
+    retired: list[tuple[str, str]] = field(default_factory=list)
+    already_retired: list[str] = field(default_factory=list)
+    conflicts: list[str] = field(default_factory=list)
+    not_in_pool: list[str] = field(default_factory=list)
+    malformed: list[str] = field(default_factory=list)
+
+
+def parse_codes_file(text: str) -> list[tuple[str, str | None]]:
+    """Read `CODE` or `CODE username` per line. Comments and blanks ignored."""
+    out: list[tuple[str, str | None]] = []
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = line.replace(",", " ").split()
+        code = parts[0].strip().upper()
+        user = None
+        if len(parts) > 1:
+            names = normalise_usernames([parts[1]])
+            user = names[0] if names else None
+        out.append((code, user))
+    return out
+
+
+def retire_codes(conn: sqlite3.Connection, app_id: str,
+                 pairs: list[tuple[str, str | None]],
+                 apply: bool = False) -> RetireReport:
+    """Mark specific codes as already spent, so they are never handed out.
+
+    Deleting a code from the CSV does NOT do this: import is additive, so a
+    code already in the database stays there and stays issuable. This is the
+    only way to retire one.
+    """
+    report = RetireReport()
+
+    for code, user in pairs:
+        if not CODE_RE.fullmatch(code):
+            report.malformed.append(code)
+            continue
+
+        row = conn.execute(
+            "SELECT used_by FROM codes WHERE app_id = ? AND code = ?",
+            (app_id, code),
+        ).fetchone()
+
+        if row is None:
+            report.not_in_pool.append(code)
+            continue
+        if row["used_by"]:
+            if user and row["used_by"] != user and row["used_by"] != SPENT_UNKNOWN:
+                report.conflicts.append(
+                    f"{code} is recorded against u/{row['used_by']}, "
+                    f"not u/{user}")
+            else:
+                report.already_retired.append(code)
+            continue
+
+        holder = user or SPENT_UNKNOWN
+        report.retired.append((code, holder))
+
+        if apply:
+            with transaction(conn):
+                conn.execute(
+                    "UPDATE codes SET used_by = ?, used_at = ? "
+                    "WHERE app_id = ? AND code = ? AND used_by IS NULL",
+                    (holder, utcnow(), app_id, code),
+                )
+                if user:
+                    store.ensure_user(conn, app_id, user)
+                    existing = store.get_user(conn, app_id, user)
+                    if existing["state"] in (store.NEW, store.AWAITING_PROOF):
+                        store.set_user_state(
+                            conn, app_id, user, store.AWAITING_PROOF,
+                            weekly_code=code,
+                            weekly_sent_at=existing["weekly_sent_at"] or utcnow())
+                log(conn, "code_retired", app_id=app_id, username=user,
+                    detail=code)
+
+    return report
+
+
+def codes_missing_from_files(conn: sqlite3.Connection, cfg) -> list[sqlite3.Row]:
+    """Codes in the database that are no longer in the app's CSV files.
+
+    Deleting a used code from a CSV is a natural way to track spend by hand,
+    but import is additive: the code stays in the database and stays
+    issuable. This finds that gap so it can be reported rather than silently
+    handing out a dead code.
+    """
+    on_disk: set[str] = set()
+    for code_file in cfg.code_files:
+        if code_file.path.exists():
+            on_disk.update(store.read_codes_csv(code_file.path, code_file.column))
+
+    rows = conn.execute(
+        "SELECT code, pool, source_file, used_by FROM codes WHERE app_id = ? "
+        "ORDER BY pool, priority, rowid",
+        (cfg.app_id,),
+    ).fetchall()
+    return [r for r in rows if r["code"] not in on_disk]

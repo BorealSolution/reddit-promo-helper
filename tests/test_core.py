@@ -51,15 +51,31 @@ class Base(unittest.TestCase):
 
 
 class TestImport(Base):
+    def csv_counts(self):
+        """What the CSVs hold right now.
+
+        Read rather than hardcoded: these files are edited by hand between
+        campaigns, and a test asserting a fixed number would fail for a
+        reason that has nothing to do with the code.
+        """
+        totals = {}
+        for cf in self.cfg.code_files:
+            codes = {c for c in store.read_codes_csv(cf.path, cf.column) if c}
+            totals.setdefault(cf.pool, set()).update(codes)
+        return {pool: len(codes) for pool, codes in totals.items()}
+
     def test_counts_match_the_csvs(self):
         pools = store.pool_counts(self.conn, "sleepbound")
-        self.assertEqual(pools["weekly"]["total"], 519)
-        self.assertEqual(pools["lifetime"]["total"], 37)
+        expected = self.csv_counts()
+        self.assertEqual(pools["weekly"]["total"], expected["weekly"])
+        self.assertEqual(pools["lifetime"]["total"], expected["lifetime"])
 
     def test_reimport_is_idempotent(self):
+        before = store.pool_counts(self.conn, "sleepbound")["weekly"]["total"]
         reports = store.import_codes(self.conn, self.cfg)
         self.assertTrue(all(r.imported == 0 for r in reports))
-        self.assertEqual(store.pool_counts(self.conn, "sleepbound")["weekly"]["total"], 519)
+        self.assertEqual(store.pool_counts(self.conn, "sleepbound")["weekly"]["total"],
+                         before)
 
     def test_reimport_does_not_free_a_used_code(self):
         with transaction(self.conn):
@@ -73,8 +89,15 @@ class TestImport(Base):
 
 class TestAllocation(Base):
     def test_priority_order_drains_first_file_first(self):
+        # How many the priority-1 file actually holds, rather than a number
+        # that goes stale when the file is edited.
+        first_file = min(self.cfg.code_files,
+                         key=lambda f: (f.pool != "weekly", f.priority))
+        n_first = len({c for c in store.read_codes_csv(first_file.path,
+                                                       first_file.column) if c})
+
         got = []
-        for i in range(21):
+        for i in range(n_first + 2):
             with transaction(self.conn):
                 store.ensure_user(self.conn, "sleepbound", f"u{i}")
                 got.append(store.allocate_code(self.conn, "sleepbound", "weekly", f"u{i}"))
@@ -82,8 +105,8 @@ class TestAllocation(Base):
             self.conn.execute("SELECT source_file FROM codes WHERE code = ?", (c,)).fetchone()[0]
             for c in got
         ]
-        self.assertEqual(set(sources[:19]), {"Reddit Promo.csv"})
-        self.assertEqual(set(sources[19:]), {"reddit round 2.csv"})
+        self.assertEqual(set(sources[:n_first]), {first_file.path.name})
+        self.assertEqual(set(sources[n_first:]), {"reddit round 2.csv"})
 
     def test_never_issues_the_same_code_twice(self):
         codes = []

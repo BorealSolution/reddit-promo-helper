@@ -238,5 +238,134 @@ class TestManualMarking(Base):
             store.pool_counts(self.conn, "sleepbound")["weekly"]["used"], 0)
 
 
+class TestRetireCodes(Base):
+    """Deleting a code from a CSV does not remove it from the database.
+    Retiring is the only thing that stops it being handed out again."""
+
+    def test_retiring_makes_a_code_unavailable(self):
+        code = self.pool_code
+        backfill.retire_codes(self.conn, "sleepbound", [(code, None)],
+                              apply=True)
+        self.assertNotEqual(
+            store.peek_next_code(self.conn, "sleepbound", "weekly"), code)
+
+    def test_preview_writes_nothing(self):
+        report = backfill.retire_codes(self.conn, "sleepbound",
+                                       [(self.pool_code, None)], apply=False)
+        self.assertEqual(len(report.retired), 1)
+        self.assertEqual(
+            store.pool_counts(self.conn, "sleepbound")["weekly"]["used"], 0)
+
+    def test_retiring_with_a_username_attributes_it(self):
+        backfill.retire_codes(self.conn, "sleepbound",
+                              [(self.pool_code, "alice")], apply=True)
+        user = store.get_user(self.conn, "sleepbound", "alice")
+        self.assertEqual(user["weekly_code"], self.pool_code)
+        self.assertEqual(user["state"], store.AWAITING_PROOF)
+
+    def test_a_retired_user_gets_a_duplicate_query(self):
+        backfill.retire_codes(self.conn, "sleepbound",
+                              [(self.pool_code, "alice")], apply=True)
+        qid = engine.process_comment(self.conn, self.cfg,
+                                     self.comment(1, "alice", "code"), "me")
+        self.assertEqual(store.get_queue_item(self.conn, qid)["action"],
+                         engine.DUPLICATE_QUERY)
+
+    def test_a_code_from_another_batch_is_reported_not_invented(self):
+        report = backfill.retire_codes(self.conn, "sleepbound",
+                                       [(OLD_CODE, None)], apply=True)
+        self.assertEqual(report.not_in_pool, [OLD_CODE])
+        self.assertEqual(report.retired, [])
+
+    def test_malformed_lines_are_skipped(self):
+        report = backfill.retire_codes(self.conn, "sleepbound",
+                                       [("nope", None)], apply=True)
+        self.assertEqual(report.malformed, ["nope"])
+
+    def test_retiring_twice_is_idempotent(self):
+        pairs = [(self.pool_code, None)]
+        backfill.retire_codes(self.conn, "sleepbound", pairs, apply=True)
+        used = store.pool_counts(self.conn, "sleepbound")["weekly"]["used"]
+        report = backfill.retire_codes(self.conn, "sleepbound", pairs,
+                                       apply=True)
+        self.assertEqual(report.already_retired, [self.pool_code])
+        self.assertEqual(
+            store.pool_counts(self.conn, "sleepbound")["weekly"]["used"], used)
+
+    def test_it_never_steals_a_code_from_another_user(self):
+        backfill.retire_codes(self.conn, "sleepbound",
+                              [(self.pool_code, "alice")], apply=True)
+        report = backfill.retire_codes(self.conn, "sleepbound",
+                                       [(self.pool_code, "bob")], apply=True)
+        self.assertTrue(report.conflicts)
+        holder = self.conn.execute("SELECT used_by FROM codes WHERE code = ?",
+                                   (self.pool_code,)).fetchone()[0]
+        self.assertEqual(holder, "alice")
+
+    def test_parsing_accepts_bare_codes_and_pairs(self):
+        parsed = backfill.parse_codes_file(
+            "# spent\n"
+            f"{OLD_CODE}\n"
+            f"{OLD_LIFETIME}  u/alice   # given away\n"
+            "\n")
+        self.assertEqual(parsed, [(OLD_CODE, None), (OLD_LIFETIME, "alice")])
+
+
+class TestCsvReconciliation(Base):
+    """A code deleted from the CSV is still in the database and still
+    issuable - the situation that silently hands out a dead code."""
+
+    def _orphan(self):
+        from reddit_promoter.db import utcnow
+        self.conn.execute(
+            "INSERT INTO codes (app_id,code,pool,source_file,priority,"
+            "imported_at) VALUES ('sleepbound',?,'weekly','Reddit Promo.csv',"
+            "1,?)", ("ZZZDELETEDFROMCSVZZZZZZ", utcnow()))
+        self.conn.commit()
+
+    def test_a_matching_database_reports_nothing(self):
+        self.assertEqual(
+            backfill.codes_missing_from_files(self.conn, self.cfg), [])
+
+    def test_a_code_removed_from_the_csv_is_found(self):
+        self._orphan()
+        missing = backfill.codes_missing_from_files(self.conn, self.cfg)
+        self.assertEqual([r["code"] for r in missing],
+                         ["ZZZDELETEDFROMCSVZZZZZZ"])
+
+    def test_such_a_code_would_otherwise_still_be_issued(self):
+        self._orphan()
+        codes = []
+        for i in range(600):
+            nxt = store.peek_next_code(self.conn, "sleepbound", "weekly",
+                                       exclude=set(codes))
+            if nxt is None:
+                break
+            codes.append(nxt)
+        self.assertIn("ZZZDELETEDFROMCSVZZZZZZ", codes)
+
+    def test_retiring_the_missing_ones_stops_that(self):
+        self._orphan()
+        missing = backfill.codes_missing_from_files(self.conn, self.cfg)
+        backfill.retire_codes(self.conn, "sleepbound",
+                              [(r["code"], None) for r in missing], apply=True)
+        codes = []
+        for i in range(600):
+            nxt = store.peek_next_code(self.conn, "sleepbound", "weekly",
+                                       exclude=set(codes))
+            if nxt is None:
+                break
+            codes.append(nxt)
+        self.assertNotIn("ZZZDELETEDFROMCSVZZZZZZ", codes)
+
+    def test_an_already_used_orphan_is_listed_but_needs_no_action(self):
+        self._orphan()
+        backfill.retire_codes(self.conn, "sleepbound",
+                              [("ZZZDELETEDFROMCSVZZZZZZ", None)], apply=True)
+        missing = backfill.codes_missing_from_files(self.conn, self.cfg)
+        self.assertEqual(len(missing), 1)
+        self.assertTrue(missing[0]["used_by"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
