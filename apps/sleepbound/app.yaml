@@ -8,7 +8,7 @@ store: play_store
 # Subreddits this app's posts live in. Informational / sanity-check only:
 # posts are watched explicitly by URL via the `watch` command.
 subreddits:
-  - TODO_SUBREDDIT
+  - droidappshowcase
 
 # Code pools. `priority` is the allocation order within a pool: lowest first.
 code_files:

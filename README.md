@@ -63,7 +63,10 @@ python promoter.py watch <post_url> --app sleepbound
 python promoter.py unwatch <post_url>
 python promoter.py poll                            # build the review queue
 python promoter.py poll --fake                     # scripted items, no Reddit
+python promoter.py poll --keep-unread              # don't mark the inbox read
 python promoter.py review [--app sleepbound]       # the dashboard
+python promoter.py review --offline                # review without contacting Reddit
+python promoter.py check-dm                        # what the API can do with DMs
 python promoter.py stats [--app sleepbound]
 python promoter.py reset-demo                      # clear local db (keeps a backup)
 ```
@@ -74,6 +77,10 @@ nothing and allocating nothing:
 ```bash
 python promoter.py --dry-run review
 ```
+
+`--dry-run` and `--offline` differ: `--offline` walks the queue and really does
+update local state (codes get allocated, users move state), it just never
+contacts Reddit. `--dry-run` changes nothing at all.
 
 ### Dashboard keys
 
@@ -101,6 +108,23 @@ python promoter.py poll --fake --app sleepbound
 python promoter.py --dry-run review     # rehearse: writes nothing
 python promoter.py review               # same flow, really updates state
 ```
+
+## First live run
+
+Do this before pointing it at a real post.
+
+1. `python promoter.py check-dm` — confirms the credentials work and reports
+   what the API can see in your inbox.
+2. Make a throwaway post in r/test, and comment on it from a second account.
+3. `python promoter.py watch <that post url> --app sleepbound`
+4. `python promoter.py poll`
+5. `python promoter.py --dry-run review` — read the drafts, confirm the right
+   codes and the right recipients, send nothing.
+6. When it looks right, `python promoter.py review` and approve one item.
+   Check the PM and the public reply actually arrived.
+7. Reply to that PM from the second account, then `poll` again and confirm the
+   reply shows up as a queue item. **This is the step that validates the whole
+   proof loop** — see the DM caveat below.
 
 ## Adding another app
 
@@ -138,6 +162,11 @@ These are enforced in code and covered by `tests/test_core.py`:
   error or a timeout all become `unclear` and get surfaced with no draft.
 - **The original CSVs are never modified.** After import, SQLite is the
   source of truth.
+- **Transient Reddit failures back off and retry** (4 attempts, doubling from
+  2s); rate limits are waited out. Real refusals - blocked, banned, deleted,
+  locked - surface immediately rather than being retried.
+- **The inbox is read in full, not just unread**, so a message you happen to
+  open on your phone is not lost. `processed_items` prevents reprocessing.
 - The database is backed up at the start of each run; the last 10 are kept.
 
 ```bash
@@ -184,5 +213,8 @@ tests/
 
 - [x] Scaffold, config, DB schema, `add-app`, `import-codes`
 - [x] Review dashboard driven by the fake source
-- [ ] PRAW comment polling and sending (test on r/test with `--dry-run` first)
-- [ ] DM capability check, then PM polling + Gemini classification
+- [x] PRAW comment polling and sending
+- [x] `check-dm` capability check, PM polling, Gemini classification
+- [ ] Verified against a real post (needs credentials)
+
+Sleepbound is configured for r/droidappshowcase as u/Remarkable_Pitch_697.
