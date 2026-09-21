@@ -14,7 +14,7 @@ import sqlite3
 from .config import AppConfig
 from .db import log, transaction, utcnow
 from .engine import (DUPLICATE_QUERY, LIFETIME_CODE, NO_CODE_PLACEHOLDER,
-                     REVIEW_ONLY, WEEKLY_CODE)
+                     NO_DRAFT_PREFIX, REVIEW_ONLY, WEEKLY_CODE)
 from . import store
 from .senders import SendError, Sender
 
@@ -55,9 +55,10 @@ def send_item(conn: sqlite3.Connection, cfg: AppConfig, item: sqlite3.Row,
     queue_id = item["id"]
     body = body_override if body_override is not None else item["draft_body"]
 
-    if action == REVIEW_ONLY:
+    if action == REVIEW_ONLY and body.strip().startswith(NO_DRAFT_PREFIX):
         raise ActionError(
-            "this item has no drafted reply - edit it first, or drop it"
+            "nothing is written for this one yet - press [e] to write a "
+            "reply, or [d] to drop it"
         )
 
     if dry_run:
@@ -70,8 +71,38 @@ def send_item(conn: sqlite3.Connection, cfg: AppConfig, item: sqlite3.Row,
         return _send_lifetime(conn, cfg, item, sender, body, queue_id, username)
     if action == DUPLICATE_QUERY:
         return _send_duplicate_query(conn, cfg, item, sender, body, queue_id, username)
+    if action == REVIEW_ONLY:
+        return _send_freeform(conn, cfg, item, sender, body, queue_id, username)
 
     raise ActionError(f"unknown action '{action}'")
+
+
+def _send_freeform(conn, cfg, item, sender, body, queue_id, username):
+    """A reply I wrote myself, usually answering someone who needed help.
+
+    Carries no code and moves nobody's state: answering a question should
+    not make someone look served, or served twice.
+    """
+    try:
+        if item["trigger_type"] == "message" and item["parent_id"]:
+            sender.reply_to_message(item["parent_id"], body)
+        elif item["trigger_type"] == "comment" and item["parent_id"]:
+            sender.reply_to_comment(item["parent_id"], body)
+        else:
+            subject = item["subject"] or f"About {cfg.name}"
+            sender.send_pm(username, subject, body)
+    except BaseException as exc:
+        with transaction(conn):
+            store.set_queue_status(conn, queue_id, store.NEEDS_RETRY,
+                                   error=str(exc) or type(exc).__name__)
+        raise
+
+    with transaction(conn):
+        store.set_queue_status(conn, queue_id, store.SENT)
+        log(conn, "freeform_reply_sent", app_id=cfg.app_id, username=username,
+            detail=f"queue:{queue_id}")
+
+    return {"code": None, "channel": "private message", "note": None}
 
 
 def _rehearse(conn, cfg, item, sender, body, username, ledger) -> dict:
@@ -81,7 +112,7 @@ def _rehearse(conn, cfg, item, sender, body, username, ledger) -> dict:
     action = item["action"]
     code = None
 
-    if action in (WEEKLY_CODE, LIFETIME_CODE):
+    if action in (WEEKLY_CODE, LIFETIME_CODE) and item["pool"]:
         code = item["allocated_code"] or ledger.take(
             conn, cfg.app_id, item["pool"], username
         )
@@ -135,11 +166,16 @@ def _send_weekly(conn, cfg, item, sender, body, queue_id, username):
     subject = item["subject"] or f"Your {cfg.name} promo code"
     try:
         sender.send_pm(username, subject, body)
-    except SendError as exc:
+    except BaseException as exc:
+        # Deliberately broad. A code is already reserved at this point, so
+        # ANY escape - a refusal, a crash, Ctrl-C, stdin closing mid-prompt -
+        # must leave the item clearly marked for retry rather than pending
+        # with a quietly reserved code.
         with transaction(conn):
-            store.set_queue_status(conn, queue_id, store.NEEDS_RETRY, error=str(exc))
+            store.set_queue_status(conn, queue_id, store.NEEDS_RETRY,
+                                   error=str(exc) or type(exc).__name__)
             log(conn, "send_failed", app_id=cfg.app_id, username=username,
-                detail=f"weekly_code queue:{queue_id} code:{code} reserved; {exc}")
+                detail=f"weekly_code queue:{queue_id} code:{code} reserved; {exc!r}")
         raise
 
     with transaction(conn):
@@ -178,11 +214,12 @@ def _send_lifetime(conn, cfg, item, sender, body, queue_id, username):
         else:
             subject = item["subject"] or f"Your lifetime {cfg.name} code"
             sender.send_pm(username, subject, body)
-    except SendError as exc:
+    except BaseException as exc:
         with transaction(conn):
-            store.set_queue_status(conn, queue_id, store.NEEDS_RETRY, error=str(exc))
+            store.set_queue_status(conn, queue_id, store.NEEDS_RETRY,
+                                   error=str(exc) or type(exc).__name__)
             log(conn, "send_failed", app_id=cfg.app_id, username=username,
-                detail=f"lifetime_code queue:{queue_id} code:{code} reserved; {exc}")
+                detail=f"lifetime_code queue:{queue_id} code:{code} reserved; {exc!r}")
         raise
 
     with transaction(conn):
@@ -203,9 +240,10 @@ def _send_duplicate_query(conn, cfg, item, sender, body, queue_id, username):
         else:
             subject = item["subject"] or f"About your {cfg.name} code"
             sender.send_pm(username, subject, body)
-    except SendError as exc:
+    except BaseException as exc:
         with transaction(conn):
-            store.set_queue_status(conn, queue_id, store.NEEDS_RETRY, error=str(exc))
+            store.set_queue_status(conn, queue_id, store.NEEDS_RETRY,
+                                   error=str(exc) or type(exc).__name__)
         raise
 
     with transaction(conn):

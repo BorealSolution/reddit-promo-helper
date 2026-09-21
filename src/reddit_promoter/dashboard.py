@@ -359,6 +359,9 @@ def review(console: Console, conn: sqlite3.Connection, configs: dict[str, AppCon
             console.print(f"[red]No config loaded for app '{item['app_id']}'.[/]")
             continue
 
+        if hasattr(sender, "begin"):
+            sender.begin(item)
+
         try:
             result = actions.send_item(conn, cfg, item, sender,
                                        body_override=body_override,

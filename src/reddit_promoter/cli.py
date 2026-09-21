@@ -5,17 +5,21 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import time
 
 from rich.console import Console
 from rich.panel import Panel
+from rich.prompt import Prompt
 from rich.table import Table
 
-from . import actions, backfill, dashboard, dmcheck, engine, store
+from . import (actions, backfill, clipboard, dashboard, dmcheck, engine,
+               store)
 from .classify import OfflineClassifier, build_classifier
 from .config import (ConfigError, DB_PATH, discover_app_ids, load_app_config,
                      load_secrets)
 from .db import backup_db, connect, ensure_data_dirs, init_db
-from .senders import RecordingSender
+from .senders import ManualSender, RecordingSender
+from .sources.base import IncomingComment, IncomingMessage
 from .sources.fake import demo_scenario
 
 console = Console()
@@ -276,13 +280,26 @@ def cmd_review(args) -> int:
     configs = _load_configs()
     secrets = load_secrets()
 
-    if args.dry_run or args.offline:
-        why = "--dry-run" if args.dry_run else "--offline"
-        sender = RecordingSender(label=why)
-        console.print(f"[yellow]{why}: nothing will actually be sent to Reddit[/]")
-        if args.offline and not args.dry_run:
-            console.print("[yellow]note: --offline still updates local state; "
-                          "use --dry-run to change nothing at all[/]")
+    have_reddit = not secrets.missing_reddit()
+
+    if args.dry_run:
+        sender = RecordingSender(label="dry-run")
+        console.print("[yellow]--dry-run: nothing sent, nothing allocated[/]")
+    elif args.offline:
+        sender = RecordingSender(label="offline")
+        console.print("[yellow]--offline: local state is updated but no "
+                      "message is produced. Use manual mode to send one.[/]")
+    elif args.manual or not have_reddit:
+        # Manual mode is the primary path while API access is pending. It
+        # needs no Reddit credentials whatsoever.
+        if not args.manual:
+            console.print("[yellow]No Reddit credentials in .env - running in "
+                          "manual mode.[/]")
+        console.print("[bold]Manual mode[/]: each approved message is copied "
+                      "to your clipboard to paste into Reddit, then you "
+                      "confirm it was sent.")
+        console.print(f"[dim]clipboard: {clipboard.describe()}[/]")
+        sender = ManualSender(console)
     else:
         from .sources.reddit_source import (RedditAuthError, RedditSender,
                                             build_reddit, verify_auth)
@@ -302,7 +319,10 @@ def cmd_review(args) -> int:
                      my_username=secrets.reddit_username,
                      dry_run=args.dry_run)
 
-    if isinstance(sender, RecordingSender) and sender.sent:
+    if isinstance(sender, ManualSender) and sender.sent:
+        console.print(f"\n[green]{len(sender.sent)} message(s) sent by hand "
+                      f"and recorded.[/]")
+    elif isinstance(sender, RecordingSender) and sender.sent:
         console.print(f"\n[dim]{len(sender.sent)} message(s) would have gone "
                       f"out in a live run.[/]")
     return 0
@@ -312,6 +332,120 @@ def cmd_stats(args) -> int:
     conn = _open_db(backup=False)
     configs = _load_configs([args.app] if args.app else None)
     dashboard.home(console, conn, configs)
+    return 0
+
+
+def _read_multiline(prompt: str) -> str:
+    console.print(f"[dim]{prompt} Finish with a line containing only '.'[/]")
+    lines = []
+    while True:
+        try:
+            line = input()
+        except EOFError:
+            break
+        if line.strip() == ".":
+            break
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def cmd_add(args) -> int:
+    """Enter a comment or message by hand, with no Reddit access at all.
+
+    This is the primary path while API access is pending: paste in who said
+    what, and the queue is built exactly as a live poll would build it.
+    """
+    try:
+        cfg = load_app_config(args.app)
+    except ConfigError as exc:
+        console.print(f"[red]{exc}[/]")
+        return 1
+
+    conn = _open_db()
+    store.register_app(conn, cfg)
+    secrets = load_secrets()
+    classifier = build_classifier(secrets, model=cfg.gemini_model)
+    me = secrets.reddit_username or "me"
+
+    # Bulk: several people who all just asked for a code.
+    if args.users:
+        names = backfill.normalise_usernames(
+            [n for n in re.split(r"[,\s]+", args.users) if n])
+        queued = 0
+        for name in names:
+            item = IncomingComment(
+                item_id=f"manual_c_{name}_{int(time.time() * 1000)}",
+                post_id=args.post or "manual",
+                author=name,
+                body=args.comment or "code",
+                permalink=args.url or "",
+                is_top_level=True,
+                parent_id="manual",
+                created_utc=time.time(),
+            )
+            if engine.process_comment(conn, cfg, item, me, classifier):
+                queued += 1
+        console.print(f"[green]{queued}[/] of {len(names)} added "
+                      f"({len(names) - queued} already known or blocked).")
+        console.print("[dim]next: review[/]")
+        return 0
+
+    username = args.user
+    body = args.comment or args.message
+    kind = "message" if args.message else "comment"
+
+    # Interactive when nothing was given on the command line.
+    if not username:
+        username = Prompt.ask("reddit username").strip()
+    username = backfill.normalise_usernames([username])
+    if not username:
+        console.print("[red]no username given[/]")
+        return 1
+    username = username[0]
+
+    if not body:
+        kind = Prompt.ask("what is it", choices=["comment", "message"],
+                          default="comment")
+        body = _read_multiline(f"Paste their {kind}.")
+    if not body:
+        console.print("[red]no text given[/]")
+        return 1
+
+    stamp = int(time.time() * 1000)
+    if kind == "message":
+        item = IncomingMessage(
+            item_id=f"manual_m_{username}_{stamp}",
+            author=username,
+            subject=args.subject or "(pasted by hand)",
+            body=body,
+            parent_id=None,
+            created_utc=time.time(),
+        )
+        console.print(f"[dim]classifier: {classifier.model_name}[/]")
+        qid = engine.process_message(conn, cfg, item, classifier,
+                                     app_id=cfg.app_id)
+    else:
+        item = IncomingComment(
+            item_id=f"manual_c_{username}_{stamp}",
+            post_id=args.post or "manual",
+            author=username,
+            body=body,
+            permalink=args.url or "",
+            is_top_level=not args.nested,
+            parent_id="manual",
+            created_utc=time.time(),
+        )
+        qid = engine.process_comment(conn, cfg, item, me, classifier)
+
+    if qid is None:
+        console.print("[yellow]Nothing queued - that user is blocked, or the "
+                      "item was already handled.[/]")
+        return 0
+
+    row = store.get_queue_item(conn, qid)
+    console.print(f"[green]Queued #{qid}[/]: {row['action']} for "
+                  f"u/{username}")
+    console.print("[dim]next: review[/]")
     return 0
 
 
@@ -522,6 +656,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("review", help="open the review dashboard")
     p.add_argument("--app")
+    p.add_argument("--manual", action="store_true",
+                   help="copy each approved message to the clipboard for you "
+                        "to paste (the default when there are no Reddit "
+                        "credentials)")
     p.add_argument("--offline", action="store_true",
                    help="walk the queue without contacting Reddit, but still "
                         "update local state")
@@ -530,6 +668,23 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("check-dm",
                        help="report what the API can do with direct messages")
     p.set_defaults(func=cmd_check_dm)
+
+    p = sub.add_parser("add",
+                       help="enter a comment or message by hand (needs no "
+                            "Reddit access)")
+    p.add_argument("--app", required=True)
+    p.add_argument("--user", help="the reddit username")
+    p.add_argument("--users",
+                   help="comma-separated usernames who all asked for a code")
+    p.add_argument("--comment", help="the text of their comment")
+    p.add_argument("--message", help="the text of their private message")
+    p.add_argument("--subject", help="subject of their message")
+    p.add_argument("--nested", action="store_true",
+                   help="a reply under one of my comments, not a top-level "
+                        "request")
+    p.add_argument("--url", help="permalink to their comment")
+    p.add_argument("--post", help="post id the comment is on")
+    p.set_defaults(func=cmd_add)
 
     p = sub.add_parser("backfill",
                        help="record people you already gave codes to by hand")

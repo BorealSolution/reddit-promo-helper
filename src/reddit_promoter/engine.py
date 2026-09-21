@@ -23,6 +23,9 @@ REVIEW_ONLY = "review_only"
 
 NO_CODE_PLACEHOLDER = "(OUT OF CODES)"
 
+# Any draft body starting with this has not been written yet.
+NO_DRAFT_PREFIX = "(no draft"
+
 
 def _draft_weekly(conn, cfg: AppConfig, username: str) -> tuple[str | None, str, str | None]:
     """Render the weekly-code PM with the code that would be used next."""
@@ -81,7 +84,7 @@ def process_comment(conn: sqlite3.Connection, cfg: AppConfig, item: IncomingComm
                 username=username,
                 action=REVIEW_ONLY,
                 pool=None,
-                draft_body="(no draft - nested reply, decide what to do)",
+                draft_body=f"{NO_DRAFT_PREFIX} - nested reply, decide what to do)",
                 trigger_type="comment",
                 trigger_id=item.item_id,
                 trigger_body=item.body,
@@ -203,7 +206,9 @@ def process_message(conn: sqlite3.Connection, cfg: AppConfig | None,
             subject, body, preview = _draft_lifetime(conn, cfg, username)
             action, pool = LIFETIME_CODE, "lifetime"
         else:
-            subject, body, preview = None, "(no draft - review and decide)", None
+            subject, body, preview = (None,
+                                      f"{NO_DRAFT_PREFIX} - review and decide)",
+                                      None)
             action, pool = REVIEW_ONLY, None
 
         queue_id = store.enqueue(

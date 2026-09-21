@@ -1,292 +1,237 @@
 # Reddit Promo Code Assistant
 
-A human-in-the-loop tool for running promo code giveaways for my mobile apps on
-Reddit. It watches my posts and inbox, drafts replies with codes, and sends them
-through the Reddit API **only after I approve each one** in a review dashboard.
+A human-in-the-loop tool for running promo code giveaways for Android apps on
+Reddit. It tracks who asked for a code, who already got one, and who has sent
+proof of a review — then drafts the reply with the right code filled in and
+waits for approval before anything goes out.
 
-Deterministic Python + SQLite makes every decision about codes, users, and
-state. Gemini is used for one thing only: putting a label on a private message.
-Nothing is ever sent without a keypress.
+Deterministic Python + SQLite makes every decision about codes, users and
+state. An LLM is used for exactly one thing: putting a label on an incoming
+message. It never chooses a code, changes a state, or writes a reply.
 
-## How the flow works
+Currently configured for **SleepBound** in r/droidappshowcase.
 
-1. I create the Reddit post manually, with an image. The tool never posts.
-2. `watch` the post URL.
-3. Someone leaves a **top-level comment** asking for a code.
-4. `poll` picks it up and drafts a **private message** carrying a weekly code,
-   plus a short public "sent you a DM" reply that never contains a code.
-5. `review` shows me the draft. I approve, and the tool sends it.
-6. They reply **in that same PM thread** with a screenshot of their review.
-7. `poll` picks the reply up, Gemini labels it `proof_submission`, and a
-   lifetime-code draft appears in the queue with every URL from their message
-   listed so I can open and check the screenshots myself.
-8. I approve, and the lifetime code goes out as a reply in the same thread.
+## Status
+
+| | |
+|---|---|
+| **Manual mode** | **Working. This is the path to use.** No Reddit API access needed. |
+| API mode | Written and tested, but dormant — waiting on Reddit API approval. |
+
+Reddit API approval can take weeks or never arrive, so manual mode is the
+primary path, not a placeholder. It does everything except the final click:
+the tool tracks state, picks the code, drafts the message and copies it to
+your clipboard; you paste it into Reddit and confirm. Nothing is recorded as
+sent unless you say it was.
+
+Switching to API mode later means filling in `.env` and changing nothing else.
+
+## What it does for you
+
+- **Stops double-issuing codes.** The thing that is genuinely hard to do by
+  hand across hundreds of comments. A repeat asker is spotted automatically
+  and gets a "did you need a second one?" question instead of another code.
+- **Allocates in order** from the CSVs, oldest batch first, and never hands
+  out the same code twice.
+- **Tracks the review→lifetime flow**, so you know who owes proof and who has
+  already been upgraded.
+- **Flags people who need help** separately from routine code requests.
+- **Keeps an audit log** of every allocation, send and state change.
 
 ## Setup
 
 ```bash
 python -m venv .venv
-.venv\Scripts\activate          # Windows
+.venv\Scripts\activate           # Windows;  source .venv/bin/activate elsewhere
 pip install -r requirements.txt
-cp .env.example .env            # then fill it in
+
+python promoter.py add-app sleepbound
+python promoter.py import-codes --app sleepbound
 ```
 
-### Registering the Reddit script app
+That is the whole setup for manual mode. No `.env` is required.
 
-1. Go to <https://www.reddit.com/prefs/apps> while logged in as the account
-   that will send the messages.
-2. "create another app..." → choose **script**.
-3. Name it anything; set the redirect uri to `http://localhost:8080` (script
-   apps never use it).
-4. The string under the app name is `REDDIT_CLIENT_ID`; the `secret` field is
-   `REDDIT_CLIENT_SECRET`.
-5. Put those, plus your Reddit username and password, in `.env`.
-6. `REDDIT_USER_AGENT` must be descriptive and identify you, e.g.
-   `windows:reddit-promoter:0.1.0 (by /u/yourname)`. Reddit rate-limits
-   generic user agents hard.
+Optionally, `GEMINI_API_KEY` in `.env` (from
+<https://aistudio.google.com/apikey>) improves how incoming private messages
+are labelled. Without it, a crude offline keyword classifier is used — fine to
+start with, and it never blocks anything.
 
-Two-factor auth on the account complicates the password flow, so prefer an
-account without it.
+## Daily use (manual mode)
 
-### Gemini key
-
-`GEMINI_API_KEY` from <https://aistudio.google.com/apikey>. Without a key the
-tool falls back to a crude offline keyword classifier, which is fine for
-rehearsals and useless for real triage.
-
-## Commands
+**1. Post.** r/droidappshowcase requires an exact format, kept in `app.yaml`:
 
 ```bash
-python promoter.py add-app sleepbound              # register from apps/<id>/app.yaml
-python promoter.py import-codes --app sleepbound   # idempotent CSV import
-python promoter.py watch <post_url> --app sleepbound
-python promoter.py unwatch <post_url>
-python promoter.py poll                            # build the review queue
-python promoter.py poll --fake                     # scripted items, no Reddit
-python promoter.py poll --keep-unread              # don't mark the inbox read
-python promoter.py review [--app sleepbound]       # the dashboard
-python promoter.py review --offline                # review without contacting Reddit
-python promoter.py check-dm                        # what the API can do with DMs
-python promoter.py post-template --app sleepbound  # the required post format
-python promoter.py backfill --app sleepbound       # recover past manual sends
-python promoter.py stats [--app sleepbound]
-python promoter.py reset-demo                      # clear local db (keeps a backup)
+python promoter.py post-template --app sleepbound --raw
 ```
 
-`--dry-run` goes before the subcommand and runs the full pipeline while sending
-nothing and allocating nothing:
+Post it yourself with the image. The tool never posts.
+
+**2. Record who asked.** As comments come in:
 
 ```bash
-python promoter.py --dry-run review
+# several people who all commented "code"
+python promoter.py add --app sleepbound --users alice,bob,carol
+
+# one person, with their actual words
+python promoter.py add --app sleepbound --user alice --comment "can I get a code?"
+
+# a private message they sent you
+python promoter.py add --app sleepbound --user alice --message "reviewed it! https://imgur.com/a/x"
+
+# or run it with no flags and it will prompt
+python promoter.py add --app sleepbound
 ```
 
-`--dry-run` and `--offline` differ: `--offline` walks the queue and really does
-update local state (codes get allocated, users move state), it just never
-contacts Reddit. `--dry-run` changes nothing at all.
+**3. Review and send.**
 
-### Dashboard keys
+```bash
+python promoter.py review
+```
+
+For each item you see their history, what they said, and the drafted reply
+with a real code in it. Press `s` and the tool copies the message to your
+clipboard, shows a prefilled Reddit compose link, and asks whether you sent
+it. Answer `y` and the code is marked used and their state moves; answer `n`
+and nothing is recorded — the code stays reserved for that person so retrying
+reuses it rather than burning a second one.
 
 | key | action |
 |---|---|
-| `s` | send |
-| `e` | edit the draft, then send |
-| `r` | reword the public reply (pick another wording) |
-| `k` | skip for now (stays pending, comes back next run) |
-| `d` | drop (mark handled, send nothing, release any reserved code) |
+| `s` | send (copies to clipboard, then confirms) |
+| `e` | write or edit the reply, then send |
+| `r` | reword the public "sent you a DM" reply |
+| `k` | skip for now — comes back next time |
+| `d` | drop — handled, nothing sent, releases any reserved code |
 | `b` | block this user for this app |
 | `a` | assign an app to an unattributed message |
 | `q` | quit, leaving the rest pending |
 
-## Trying it without touching Reddit
+**4. Check stock.**
 
-The fake source exercises every branch the dashboard handles: a normal request,
-a repeat asker, a nested reply, a proof submission with screenshot links, an
-off-topic message, a deleted account, and a prompt-injection attempt.
+```bash
+python promoter.py stats
+```
+
+### Before your first run: record past giveaways
+
+The duplicate check only knows what this tool recorded. Anyone you gave a code
+to by hand looks brand new and would be served twice:
+
+```bash
+python promoter.py backfill --app sleepbound --users alice,bob --apply
+```
+
+With Reddit credentials it can read this out of your sent folder
+automatically; without them, list the usernames. Do this **before** the first
+review session.
+
+## Clipboard support
+
+| OS | Backend | Notes |
+|---|---|---|
+| Windows | `clip.exe` | Built in. Verified here, including non-ASCII. |
+| macOS | `pbcopy` | Built in. |
+| Linux | `wl-copy`, `xclip` or `xsel` | Install one, e.g. `apt install xclip`. |
+| any | `tkinter` | Automatic fallback if the above fails. |
+
+If no clipboard is available the message is printed in full so you can copy it
+by hand — the workflow never blocks on it. `review` prints which backend it is
+using at startup.
+
+## Try it without sending anything
 
 ```bash
 python promoter.py reset-demo
 python promoter.py add-app sleepbound
 python promoter.py import-codes --app sleepbound
-python promoter.py poll --fake --app sleepbound
-python promoter.py --dry-run review     # rehearse: writes nothing
-python promoter.py review               # same flow, really updates state
+python promoter.py poll --fake --app sleepbound   # scripted people
+python promoter.py --dry-run review               # changes nothing at all
 ```
 
-## First live run
-
-Do this before pointing it at a real post.
-
-1. `python promoter.py check-dm` — confirms the credentials work and reports
-   what the API can see in your inbox.
-2. Make a throwaway post in r/test, and comment on it from a second account.
-3. `python promoter.py watch <that post url> --app sleepbound`
-4. `python promoter.py poll`
-5. `python promoter.py --dry-run review` — read the drafts, confirm the right
-   codes and the right recipients, send nothing.
-6. When it looks right, `python promoter.py review` and approve one item.
-   Check the PM and the public reply actually arrived.
-7. Reply to that PM from the second account, then `poll` again and confirm the
-   reply shows up as a queue item. **This is the step that validates the whole
-   proof loop** — see the DM caveat below.
-
-## Backfilling codes you already gave out by hand
-
-The duplicate check only knows what the tool recorded. Anyone served manually
-before this existed looks brand new, comments again, and gets a second code.
-
-Your sent-messages folder is the record of what actually went out, so read it
-back:
-
-```bash
-python promoter.py backfill --app sleepbound            # preview, writes nothing
-python promoter.py backfill --app sleepbound --apply    # record it
-```
-
-It scans sent messages for 23-character promo codes, works out who got what
-and whether it was a weekly or a lifetime code, and shows you the table before
-writing anything. On `--apply` it records each person as already served, and
-retires any of those codes that are still marked unused in your CSVs - so a
-code you handed out by hand can never be issued a second time.
-
-Safe to re-run. It never downgrades someone who is further along, and a code
-already attributed to a different user is reported as a conflict rather than
-reassigned.
-
-For anyone the sent folder cannot account for - given out in a comment, over
-chat, or too long ago:
-
-```bash
-python promoter.py backfill --app sleepbound --users alice,u/bob --apply
-```
-
-That records them as served without inventing a code. **Do this before the
-first live poll**, or the first batch of repeat askers gets served twice.
-
-## Posting
-
-r/droidappshowcase requires an exact post format. It lives in
-`apps/sleepbound/app.yaml` under `post_template`, so the wording stays in one
-place:
-
-```bash
-python promoter.py post-template --app sleepbound          # formatted
-python promoter.py post-template --app sleepbound --raw    # for copy-paste
-```
-
-The tool never posts. Create the post yourself, with the image, then `watch`
-its URL.
-
-The public "sent you a DM" reply rotates at random between the wordings listed
-under `templates.public_ack.bodies`, so a thread of them does not read as one
-bot repeating a sentence. The wording is chosen **when the draft is made**, not
-at send time, so the dashboard shows the exact text that will be posted under
-your account; `r` picks a different one. No wording may contain `{code}` —
-there is a test enforcing that.
-
-## Adding another app
-
-No code changes needed:
-
-1. `apps/<new_app_id>/app.yaml` — display name, store (`play_store` or
-   `app_store`), subreddits, code files with their pool and priority, low-stock
-   thresholds, and the message templates.
-2. Drop its CSVs in `apps/<new_app_id>/codes/`.
-3. `python promoter.py add-app <new_app_id>`
-4. `python promoter.py import-codes --app <new_app_id>`
-
-Duplicate checks, code pools, user state, and blocks are all per app.
-
-## When someone needs help
-
-Not every queue item is a code to send. A private message that Gemini reads as
-a question, or cannot read confidently, is surfaced with no draft and labelled:
-
-- **NEEDS YOUR HELP** - reads as a question; someone is probably stuck
-- **unreadable - please look** - low confidence, malformed response, or an API
-  failure; never guessed at
-- **asked for a code by DM** - a code request that arrived by message rather
-  than as a comment on the post
-
-The home screen counts these separately from the routine queue, so a person
-waiting on an answer does not get buried under code requests. Reply with `e`,
-or clear it with `d`.
+`--dry-run` runs the whole pipeline and writes nothing: no allocation, no
+state change, no audit entry.
 
 ## Safety properties
 
-These are enforced in code and covered by `tests/test_core.py`:
+Enforced in code, covered by 135 tests (`python -m unittest discover -s tests`):
 
-- **A code is never issued twice.** Allocation claims the row with a
+- **A code is never issued twice** — allocation claims the row with a
   conditional `UPDATE ... WHERE used_by IS NULL`.
-- **A cancelled draft never burns a code.** Drafts render a *preview*;
-  allocation happens at send time, inside a transaction.
-- **A failed Reddit call does not lose the code.** Allocation commits before
-  the network call. On failure the item becomes `needs_retry` with the code
-  still reserved for that user, and retrying reuses the same code.
-- **An edited draft that no longer contains the allocated code is refused**
-  rather than sent.
-- **The public acknowledgement is best-effort.** If the PM succeeds but the
-  public reply fails, the item is still `sent` — it will not re-PM.
-- **`--dry-run` writes nothing at all**: no allocation, no state change, no
-  audit entry, no queue update.
+- **Nothing is allocated at draft time.** Drafts show a *preview*; the real
+  allocation happens at the moment you approve. Skipping or dropping a draft
+  burns nothing.
+- **A send that did not happen is never recorded as sent.** Answering "no",
+  a crash, or input closing mid-prompt all mark the item `needs_retry` with
+  the code still reserved for that person, so the retry reuses it.
+- **No pending item ever holds an allocated code** — an invariant a real bug
+  once violated; there is a regression test for it.
+- **An edited draft that no longer contains the allocated code is refused.**
+- **The public reply can never contain a code** — enforced by a test, since
+  that reply is the only thing posted publicly.
 - **Empty pool halts sending** for that app.
-- **Gemini only labels.** It never chooses a code, changes state, decides a
-  duplicate, or writes a reply. Confidence below 0.7, malformed JSON, an API
-  error or a timeout all become `unclear` and get surfaced with no draft.
-- **The original CSVs are never modified.** After import, SQLite is the
-  source of truth.
-- **Transient Reddit failures back off and retry** (4 attempts, doubling from
-  2s); rate limits are waited out. Real refusals - blocked, banned, deleted,
-  locked - surface immediately rather than being retried.
-- **The inbox is read in full, not just unread**, so a message you happen to
-  open on your phone is not lost. `processed_items` prevents reprocessing.
-- The database is backed up at the start of each run; the last 10 are kept.
+- **The LLM only labels.** Low confidence, malformed output, an API error or
+  a timeout all become "unclear" and are surfaced with no draft. The prompt
+  states the message is untrusted data, and a message trying to instruct the
+  classifier still cannot cause a code to be drafted.
+- **The original CSVs are never modified.** After import, SQLite is the source
+  of truth. The database is backed up at the start of every run.
 
-```bash
-python -m unittest discover -s tests
-```
+## Adding another app
 
-## Reddit DM caveat (important)
+No code changes: create `apps/<id>/app.yaml`, drop its CSVs in
+`apps/<id>/codes/`, then `add-app` and `import-codes`. Codes, duplicate
+checks, user state and blocks are all per app.
 
-Reddit announced in March 2025 that it is replacing classic Private Messages
-with Reddit Chat plus inbox notifications. Classic PMs still work through the
-API (`/api/compose`, and PRAW's inbox), and Reddit Chat has **no public API at
-all** — PRAW cannot read it, send to it, or even see that a chat exists.
+## API mode (pending Reddit approval)
 
-This tool uses classic PMs. The consequence: if someone contacts you through
-the **Chat** button rather than replying to the message thread the tool
-started, you will never see it here. That is why the public acknowledgement
+Once a Reddit script app is approved, fill in `.env` (see `.env.example`) and
+`review` switches from manual to sending directly; `poll` then reads comments
+and messages instead of `add`. `python promoter.py check-dm` reports what the
+API can actually see.
+
+One caveat that will matter: Reddit is replacing classic private messages with
+**Reddit Chat**, which has no public API. Classic PMs work; anything sent via
+the Chat button is invisible to the tool. That is also why the public reply
 says "messages, not chat".
-
-Before relying on the proof loop, verify that a reply to a PM the tool sent
-comes back into the API-visible inbox: send yourself a PM from a second
-account, reply to it, and check that `poll` sees the reply.
 
 ## Layout
 
 ```
-apps/<app_id>/app.yaml        per-app config and message templates
-apps/<app_id>/codes/*.csv     code files (gitignored)
+apps/<app_id>/app.yaml      per-app config, post format, message templates
+apps/<app_id>/codes/*.csv   code files (gitignored)
 src/reddit_promoter/
-  config.py                   .env + app.yaml loading
-  db.py                       SQLite schema, transactions, backups
-  store.py                    codes, users, queue, watches - all state
-  engine.py                   incoming items -> drafted queue entries
-  actions.py                  approve -> allocate -> send -> record
-  senders.py                  the outbound boundary (recording / real)
-  classify.py                 message labelling + result cache
-  dashboard.py                the terminal review UI
-  cli.py                      commands
-  sources/                    fake (scripted) and Reddit item sources
-data/                         SQLite db + backups (gitignored)
+  config.py                 app.yaml + .env loading
+  db.py                     SQLite schema, transactions, backups
+  store.py                  codes, users, queue - all state
+  engine.py                 incoming items -> drafted queue entries
+  actions.py                approve -> allocate -> send -> record
+  senders.py                manual (clipboard) and API senders
+  clipboard.py              cross-platform clipboard
+  classify.py               message labelling + result cache
+  dashboard.py              the terminal review UI
+  backfill.py               recover codes given out by hand
+  cli.py                    commands
+  sources/                  fake, and Reddit (dormant)
+data/                       SQLite db + backups (gitignored)
 tests/
 ```
 
-## Status
+## Commands
 
-- [x] Scaffold, config, DB schema, `add-app`, `import-codes`
-- [x] Review dashboard driven by the fake source
-- [x] PRAW comment polling and sending
-- [x] `check-dm` capability check, PM polling, Gemini classification
-- [ ] Verified against a real post (needs credentials)
+```
+add-app <id>              register an app from apps/<id>/app.yaml
+import-codes --app <id>   idempotent CSV import
+add --app <id>            enter a comment or message by hand
+review [--app <id>]       the approval dashboard
+stats [--app <id>]        code stock and user states
+backfill --app <id>       record codes given out by hand
+post-template --app <id>  print the required post format
+reset-demo                clear the local database (keeps a backup)
 
-Sleepbound is configured for r/droidappshowcase as u/Remarkable_Pitch_697.
+poll [--fake]             fetch from Reddit (API mode) or run the demo source
+watch <url> --app <id>    monitor a post (API mode)
+unwatch <url>
+check-dm                  report what the API can see (API mode)
+
+--dry-run                 global: run everything, change nothing
+```
