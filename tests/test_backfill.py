@@ -18,10 +18,11 @@ from reddit_promoter.config import load_app_config               # noqa: E402
 from reddit_promoter.db import connect, init_db                  # noqa: E402
 from reddit_promoter.sources.base import IncomingComment         # noqa: E402
 
-# Real-shaped codes: 23 uppercase alphanumerics.
-POOL_CODE = "AAAAAAAAOLDWEEKLYAAAAAA"      # the first code in Reddit Promo.csv
-OLD_CODE = "AAAAAAAAOLDWEEKLYAAAAAA"       # from an earlier batch, not in a CSV
+# Codes are 23 uppercase alphanumerics. These two are obvious fakes of the
+# right shape; no real code is written into this repo.
+OLD_CODE = "AAAAAAAAOLDWEEKLYAAAAAA"
 OLD_LIFETIME = "BBBBBBBBOLDLIFETIMEBBBB"
+assert len(OLD_CODE) == len(OLD_LIFETIME) == 23
 
 
 def sent_message(dest, body, subject="Your Sleepbound promo code", when=1000.0):
@@ -44,6 +45,9 @@ class Base(unittest.TestCase):
         store.register_app(self.conn, self.cfg)
         store.import_codes(self.conn, self.cfg)
         self.reddit = mock.Mock()
+        # A code that really is in the pool, read from the imported data so
+        # no live code has to be written down here.
+        self.pool_code = store.peek_next_code(self.conn, "sleepbound", "weekly")
 
     def scan(self, messages):
         self.reddit.inbox.sent.return_value = messages
@@ -89,7 +93,7 @@ class TestScanning(Base):
 
     def test_repeat_sends_keep_the_earliest(self):
         report = self.scan([
-            sent_message("alice", f"resend {POOL_CODE}", when=99.0),
+            sent_message("alice", f"resend {self.pool_code}", when=99.0),
             sent_message("alice", f"first {OLD_CODE}", when=1.0),
         ])
         self.assertEqual(len(report.found), 1)
@@ -100,7 +104,7 @@ class TestScanning(Base):
         self.assertEqual(report.found, [])
 
     def test_recognises_a_code_that_is_in_the_csvs(self):
-        report = self.scan([sent_message("alice", f"code {POOL_CODE}")])
+        report = self.scan([sent_message("alice", f"code {self.pool_code}")])
         self.assertTrue(report.found[0].in_pool)
 
     def test_recognises_a_code_from_an_older_batch(self):
@@ -108,7 +112,7 @@ class TestScanning(Base):
         self.assertFalse(report.found[0].in_pool)
 
     def test_scanning_alone_writes_nothing(self):
-        self.scan([sent_message("alice", f"code {POOL_CODE}")])
+        self.scan([sent_message("alice", f"code {self.pool_code}")])
         self.assertIsNone(store.get_user(self.conn, "sleepbound", "alice"))
         self.assertEqual(
             store.pool_counts(self.conn, "sleepbound")["weekly"]["used"], 0)
@@ -145,14 +149,14 @@ class TestApplying(Base):
                          engine.WEEKLY_CODE)
 
     def test_a_code_from_the_csvs_is_retired(self):
-        report = self.scan([sent_message("alice", f"code {POOL_CODE}")])
+        report = self.scan([sent_message("alice", f"code {self.pool_code}")])
         backfill.apply_backfill(self.conn, "sleepbound", report)
 
         row = self.conn.execute(
-            "SELECT used_by FROM codes WHERE code = ?", (POOL_CODE,)).fetchone()
+            "SELECT used_by FROM codes WHERE code = ?", (self.pool_code,)).fetchone()
         self.assertEqual(row[0], "alice")
         self.assertEqual(store.peek_next_code(self.conn, "sleepbound", "weekly")
-                         != POOL_CODE, True)
+                         != self.pool_code, True)
 
     def test_a_code_from_an_older_batch_does_not_touch_the_pool(self):
         report = self.scan([sent_message("alice", f"code {OLD_CODE}")])
@@ -161,7 +165,7 @@ class TestApplying(Base):
             store.pool_counts(self.conn, "sleepbound")["weekly"]["used"], 0)
 
     def test_applying_twice_is_idempotent(self):
-        messages = [sent_message("alice", f"code {POOL_CODE}")]
+        messages = [sent_message("alice", f"code {self.pool_code}")]
         backfill.apply_backfill(self.conn, "sleepbound", self.scan(messages))
         used_after_first = store.pool_counts(
             self.conn, "sleepbound")["weekly"]["used"]
@@ -198,12 +202,12 @@ class TestApplying(Base):
             store.ensure_user(self.conn, "sleepbound", "first")
             store.allocate_code(self.conn, "sleepbound", "weekly", "first")
 
-        report = self.scan([sent_message("second", f"code {POOL_CODE}")])
+        report = self.scan([sent_message("second", f"code {self.pool_code}")])
         self.assertTrue(report.conflicts)
 
         backfill.apply_backfill(self.conn, "sleepbound", report)
         row = self.conn.execute(
-            "SELECT used_by FROM codes WHERE code = ?", (POOL_CODE,)).fetchone()
+            "SELECT used_by FROM codes WHERE code = ?", (self.pool_code,)).fetchone()
         self.assertEqual(row[0], "first")
 
 

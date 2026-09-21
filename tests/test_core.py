@@ -3,6 +3,7 @@
 Run with:  python -m unittest discover -s tests
 """
 
+import re
 import sys
 import tempfile
 import unittest
@@ -535,14 +536,20 @@ class TestConfiguredTemplates(Base):
             username="alice", code="TESTCODE", app_name="Sleepbound")
         self.assertNotIn("TESTCODE", body)
 
-    def test_no_template_still_contains_a_literal_example_code(self):
-        # The wording was supplied with real codes pasted in; they must have
-        # been replaced by the placeholder, or every user gets the same code.
-        leaked = ("AAAAAAAAOLDWEEKLYAAAAAA", "BBBBBBBBOLDLIFETIMEBBBB")
+    def test_no_template_contains_a_hardcoded_code(self):
+        """The wording was supplied with real codes pasted into it. If one
+        survived, every user would be sent the same dead code.
+
+        Checks the shape rather than specific strings, so it also catches a
+        code pasted in later - and keeps real codes out of this repo.
+        """
+        code_shaped = re.compile(r"[A-Z0-9]{23}")
         for name, tpl in self.cfg.templates.items():
             for body in tpl.bodies:
-                for code in leaked:
-                    self.assertNotIn(code, body, f"{name} still has {code}")
+                found = code_shaped.findall(body)
+                self.assertEqual(found, [],
+                                 f"template '{name}' has a hardcoded code: "
+                                 f"{found}")
 
 
 class TestPostTemplate(Base):
