@@ -130,6 +130,18 @@ PAGE = """
     </form>
   </div>
 
+  <div class="card">
+    <form method="post" action="{{ url_for('reward') }}">
+      <label for="ru"><b>They left a review &mdash; send the lifetime code</b></label>
+      <div class="sub" style="margin:4px 0 8px">Use this once you have looked at
+        their screenshot and you are happy with it.</div>
+      <input type="text" id="ru" name="username" placeholder="their username">
+      <div class="row" style="margin-top:8px">
+        <button type="submit">Draft the lifetime code</button>
+      </div>
+    </form>
+  </div>
+
   {% if not items %}
     <div class="card empty-state">Nothing waiting. Add someone above.</div>
   {% endif %}
@@ -406,6 +418,29 @@ def create_app(app_id: str | None = None) -> Flask:
             engine.process_message(conn, cfg, item, classifier(),
                                    app_id=cfg.app_id)
             return redirect(url_for("index", msg="Message added."))
+        finally:
+            conn.close()
+
+    @flask_app.post("/reward")
+    def reward():
+        conn = db()
+        try:
+            names, _bad = backfill.split_usernames(
+                request.form.get("username", ""))
+            if not names:
+                return redirect(url_for("index",
+                                        msg="That is not a valid username."))
+            name = names[0]
+            reason = engine.lifetime_block_reason(conn, cfg.app_id, name)
+            if reason:
+                return redirect(url_for("index", msg=reason))
+            qid = engine.queue_lifetime_reward(conn, cfg, name)
+            if qid is None:
+                return redirect(url_for(
+                    "index", msg=f"Could not draft one for u/{name}."))
+            return redirect(url_for(
+                "index", msg=f"Lifetime code drafted for u/{name} - press "
+                             f"Send on their card."))
         finally:
             conn.close()
 

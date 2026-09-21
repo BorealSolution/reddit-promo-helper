@@ -77,6 +77,15 @@ Nothing is allocated until step 3, and nothing counts as sent until step 4.
 If you close the browser midway, the person is still in the queue with their
 code held for them.
 
+**When someone sends you a review screenshot:** look at it, and if you are
+happy, put their username in the third box, *They left a review*. The
+lifetime code is drafted straight away - no need to paste their message or
+hope it gets recognised. From a terminal that is
+`.\promoter.cmd reward --app sleepbound --user NAME`.
+
+Someone who already has a lifetime code is refused, with the code they were
+given.
+
 Private messages you receive go in the second box. Review screenshots are
 recognised and a lifetime-code reply is drafted, with the links pulled out so
 you can check them first.

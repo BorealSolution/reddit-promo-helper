@@ -229,3 +229,55 @@ def process_message(conn: sqlite3.Connection, cfg: AppConfig | None,
         store.mark_processed(conn, item.item_id, "message", app_id=resolved_app,
                              username=username, action=f"queued_{action}")
         return queue_id
+
+
+def queue_lifetime_reward(conn: sqlite3.Connection, cfg: AppConfig,
+                          username: str, note: str = "") -> int | None:
+    """Draft the lifetime code for someone whose review I have verified.
+
+    Deliberately skips the classifier. Deciding that a screenshot is genuine
+    is my judgement, not the model's, and routing that decision through a
+    label that might come back "unclear" only adds a way for it to fail.
+    """
+    with transaction(conn):
+        user = store.ensure_user(conn, cfg.app_id, username)
+
+        if user["state"] == store.BLOCKED:
+            return None
+        if user["lifetime_code"]:
+            return None          # already rewarded; caller reports this
+
+        if store.has_code_item(conn, cfg.app_id, username, LIFETIME_CODE):
+            return None          # already queued
+
+        subject, body, preview = _draft_lifetime(conn, cfg, username)
+        return store.enqueue(
+            conn,
+            app_id=cfg.app_id,
+            username=username,
+            action=LIFETIME_CODE,
+            pool="lifetime",
+            subject=subject,
+            draft_body=body,
+            trigger_type="message",
+            trigger_id=f"reward_{cfg.app_id}_{username}",
+            trigger_body=note or "Review verified by me.",
+            parent_id=None,
+            preview_code=preview,
+        )
+
+
+def lifetime_block_reason(conn: sqlite3.Connection, app_id: str,
+                          username: str) -> str | None:
+    """Why a reward could not be queued, in words. None if it was fine."""
+    user = store.get_user(conn, app_id, username)
+    if user is None:
+        return None
+    if user["state"] == store.BLOCKED:
+        return f"u/{username} is blocked for this app."
+    if user["lifetime_code"]:
+        return (f"u/{username} already has lifetime code "
+                f"{user['lifetime_code']}.")
+    if store.has_code_item(conn, app_id, username, LIFETIME_CODE):
+        return f"A lifetime code for u/{username} is already in the queue."
+    return None

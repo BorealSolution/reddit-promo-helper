@@ -596,6 +596,39 @@ def cmd_backfill(args) -> int:
     return 0
 
 
+def cmd_reward(args) -> int:
+    """Draft the lifetime code for someone whose review I have checked."""
+    try:
+        cfg = load_app_config(args.app)
+    except ConfigError as exc:
+        console.print(f"[red]{exc}[/]")
+        return 1
+
+    conn = _open_db()
+    store.register_app(conn, cfg)
+
+    names, rejected = backfill.split_usernames(args.user or "")
+    if rejected:
+        console.print(f"[yellow]ignored: {', '.join(rejected)}[/]")
+    if not names:
+        console.print("[red]give a valid username with --user[/]")
+        return 1
+
+    for name in names:
+        reason = engine.lifetime_block_reason(conn, cfg.app_id, name)
+        if reason:
+            console.print(f"[yellow]{reason}[/]")
+            continue
+        qid = engine.queue_lifetime_reward(conn, cfg, name)
+        if qid is None:
+            console.print(f"[yellow]could not draft one for u/{name}[/]")
+            continue
+        console.print(f"[green]Lifetime code drafted for u/{name}[/] "
+                      f"(queue #{qid})")
+    console.print("[dim]next: review, or the browser page[/]")
+    return 0
+
+
 def cmd_web(args) -> int:
     """Open the point-and-click version in a browser."""
     from . import web
@@ -842,6 +875,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--apply", action="store_true",
                    help="actually write it (default is a preview)")
     p.set_defaults(func=cmd_backfill)
+
+    p = sub.add_parser("reward",
+                       help="send the lifetime code to someone whose review "
+                            "you have checked")
+    p.add_argument("--app", required=True)
+    p.add_argument("--user", required=True)
+    p.set_defaults(func=cmd_reward)
 
     p = sub.add_parser("web", help="open the point-and-click version in a browser")
     p.add_argument("--app")

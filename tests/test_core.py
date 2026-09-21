@@ -594,6 +594,77 @@ class TestPostTemplate(Base):
         self.assertIn("play.google.com", tpl["body"])
 
 
+class TestLifetimeReward(Base):
+    """Rewarding a verified review, without going through the classifier."""
+
+    def _served(self, username="alice"):
+        qid = engine.process_comment(self.conn, self.cfg,
+                                     self.comment(1, username, "code"), "me")
+        actions.send_item(self.conn, self.cfg, self.queue_row(qid), self.sender)
+
+    def test_it_drafts_a_lifetime_code(self):
+        self._served()
+        qid = engine.queue_lifetime_reward(self.conn, self.cfg, "alice")
+        item = self.queue_row(qid)
+        self.assertEqual(item["action"], engine.LIFETIME_CODE)
+        self.assertEqual(item["pool"], "lifetime")
+        self.assertIn(item["preview_code"], item["draft_body"])
+
+    def test_no_code_is_allocated_until_it_is_sent(self):
+        self._served()
+        engine.queue_lifetime_reward(self.conn, self.cfg, "alice")
+        self.assertEqual(
+            store.pool_counts(self.conn, "sleepbound")["lifetime"]["used"], 0)
+
+    def test_sending_it_marks_them_rewarded(self):
+        self._served()
+        qid = engine.queue_lifetime_reward(self.conn, self.cfg, "alice")
+        result = actions.send_item(self.conn, self.cfg, self.queue_row(qid),
+                                   self.sender)
+        user = store.get_user(self.conn, "sleepbound", "alice")
+        self.assertEqual(user["state"], store.LIFETIME_SENT)
+        self.assertEqual(user["lifetime_code"], result["code"])
+
+    def test_it_works_for_someone_served_before_the_tool_existed(self):
+        """The 79 backfilled people must be rewardable too."""
+        from reddit_promoter import backfill
+        backfill.mark_users_served(self.conn, "sleepbound", ["oldtimer"])
+        qid = engine.queue_lifetime_reward(self.conn, self.cfg, "oldtimer")
+        self.assertIsNotNone(qid)
+        self.assertEqual(self.queue_row(qid)["action"], engine.LIFETIME_CODE)
+
+    def test_rewarding_twice_is_refused(self):
+        self._served()
+        qid = engine.queue_lifetime_reward(self.conn, self.cfg, "alice")
+        actions.send_item(self.conn, self.cfg, self.queue_row(qid), self.sender)
+
+        self.assertIsNotNone(
+            engine.lifetime_block_reason(self.conn, "sleepbound", "alice"))
+        self.assertIsNone(
+            engine.queue_lifetime_reward(self.conn, self.cfg, "alice"))
+        self.assertEqual(
+            store.pool_counts(self.conn, "sleepbound")["lifetime"]["used"], 1)
+
+    def test_queuing_twice_does_not_make_two_drafts(self):
+        self._served()
+        first = engine.queue_lifetime_reward(self.conn, self.cfg, "alice")
+        second = engine.queue_lifetime_reward(self.conn, self.cfg, "alice")
+        self.assertIsNotNone(first)
+        self.assertIsNone(second)
+
+    def test_a_blocked_user_is_refused(self):
+        actions.block_user(self.conn, "sleepbound", "spammer")
+        self.assertIsNone(
+            engine.queue_lifetime_reward(self.conn, self.cfg, "spammer"))
+
+    def test_the_reason_is_explained(self):
+        self._served()
+        qid = engine.queue_lifetime_reward(self.conn, self.cfg, "alice")
+        actions.send_item(self.conn, self.cfg, self.queue_row(qid), self.sender)
+        reason = engine.lifetime_block_reason(self.conn, "sleepbound", "alice")
+        self.assertIn("already has lifetime code", reason)
+
+
 class TestUrlExtraction(unittest.TestCase):
     def test_finds_each_url_once_in_order(self):
         text = ("proof: https://imgur.com/a/abc and https://example.com/x. "
