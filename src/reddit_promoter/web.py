@@ -496,11 +496,31 @@ def create_app(app_id: str | None = None) -> Flask:
     return flask_app
 
 
+def _open_when_ready(url: str, port: int, timeout: float = 30.0) -> None:
+    """Open the browser only once the server actually accepts connections.
+
+    Opening on a fixed delay races the server's startup: on a cold start the
+    browser gets there first and shows "refused to connect", which looks
+    like the tool is broken.
+    """
+    import socket
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with socket.socket() as probe:
+            probe.settimeout(0.3)
+            if probe.connect_ex(("127.0.0.1", port)) == 0:
+                webbrowser.open(url)
+                return
+        time.sleep(0.15)
+
+
 def serve(app_id: str | None = None, port: int = 5000,
           open_browser: bool = True) -> None:
     flask_app = create_app(app_id)
     url = f"http://127.0.0.1:{port}/"
     if open_browser:
-        threading.Timer(0.8, lambda: webbrowser.open(url)).start()
+        threading.Thread(target=_open_when_ready, args=(url, port),
+                         daemon=True).start()
     # Bound to loopback on purpose: this reads and writes promo codes.
     flask_app.run(host="127.0.0.1", port=port, debug=False)
