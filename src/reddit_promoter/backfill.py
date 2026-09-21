@@ -175,17 +175,48 @@ def apply_backfill(conn: sqlite3.Connection, app_id: str,
     return report
 
 
+# Reddit usernames: 3-20 characters, letters, digits, underscore, hyphen.
+USERNAME_RE = re.compile(r"^[A-Za-z0-9_-]{3,20}$")
+
+
+def clean_username(raw: str) -> str | None:
+    """Turn alice, u/alice or /u/alice into 'alice'. None if it is not a
+    plausible Reddit username.
+
+    Input is pasted by hand from a browser, so it arrives with stray
+    punctuation and the occasional half-line. Anything that cannot be a
+    username is rejected rather than quietly becoming a junk user who then
+    occupies a slot in the duplicate check.
+    """
+    name = (raw or "").strip().strip(",;:()[]<>\"'").lstrip("/")
+    if name.lower().startswith("u/"):
+        name = name[2:]
+    name = name.strip().lstrip("/").rstrip(".,;:")
+    return name if USERNAME_RE.match(name) else None
+
+
 def normalise_usernames(raw: list[str]) -> list[str]:
-    """Accept alice, u/alice or /u/alice and return the bare name, in order."""
+    """Clean a list of names, dropping duplicates and anything invalid."""
     out: list[str] = []
     for item in raw:
-        name = item.strip().lstrip("/")
-        if name.lower().startswith("u/"):
-            name = name[2:]
-        name = name.strip().lstrip("/")
+        name = clean_username(item)
         if name and name not in out:
             out.append(name)
     return out
+
+
+def split_usernames(text: str) -> tuple[list[str], list[str]]:
+    """Split pasted text into (valid usernames, rejected fragments)."""
+    pieces = [p for p in re.split(r"[,\s]+", text or "") if p]
+    good: list[str] = []
+    bad: list[str] = []
+    for piece in pieces:
+        name = clean_username(piece)
+        if name is None:
+            bad.append(piece)
+        elif name not in good:
+            good.append(name)
+    return good, bad
 
 
 def mark_users_served(conn: sqlite3.Connection, app_id: str,

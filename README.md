@@ -56,7 +56,32 @@ Optionally, `GEMINI_API_KEY` in `.env` (from
 are labelled. Without it, a crude offline keyword classifier is used — fine to
 start with, and it never blocks anything.
 
-## Daily use (manual mode)
+## Daily use (the browser version)
+
+```powershell
+.\promoter.cmd web
+```
+
+1. **Paste usernames** into the top box and press *Add to the queue*. Commas,
+   spaces or new lines all work; `u/name` is fine. Anything that is not a
+   valid username is rejected and listed rather than becoming a junk entry.
+2. Each person appears as a card with their history and the drafted message.
+   Someone who already has a code is labelled and gets a question instead.
+3. Press **Send**. The code is allocated and the message shown with a
+   *Copy* button and an *Open Reddit & send* link that has the message
+   already filled in.
+4. Send it in the tab that opens, come back, and press **Yes, I sent it**
+   (or **No, I didn't**).
+
+Nothing is allocated until step 3, and nothing counts as sent until step 4.
+If you close the browser midway, the person is still in the queue with their
+code held for them.
+
+Private messages you receive go in the second box. Review screenshots are
+recognised and a lifetime-code reply is drafted, with the links pulled out so
+you can check them first.
+
+## Daily use (the terminal version)
 
 **1. Post.** r/droidappshowcase requires an exact format, kept in `app.yaml`:
 

@@ -3,3 +3,4 @@ google-genai>=1.0.0
 python-dotenv>=1.0.0
 PyYAML>=6.0
 rich>=13.0.0
+flask>=3.0

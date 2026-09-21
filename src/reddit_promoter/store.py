@@ -24,6 +24,9 @@ BLOCKED = "blocked"
 
 # Queue statuses.
 PENDING = "pending"
+# Prepared and handed to the operator, waiting for them to say they sent it.
+# A code is already reserved at this point.
+AWAITING_CONFIRM = "awaiting_confirm"
 SENT = "sent"
 SKIPPED = "skipped"
 DROPPED = "dropped"
@@ -401,8 +404,8 @@ def has_code_item(conn: sqlite3.Connection, app_id: str, username: str,
 
 
 def pending_items(conn: sqlite3.Connection, app_id: str | None = None) -> list[sqlite3.Row]:
-    sql = "SELECT * FROM queue WHERE status IN (?, ?)"
-    params: list = [PENDING, NEEDS_RETRY]
+    sql = "SELECT * FROM queue WHERE status IN (?, ?, ?)"
+    params: list = [PENDING, NEEDS_RETRY, AWAITING_CONFIRM]
     if app_id:
         sql += " AND app_id = ?"
         params.append(app_id)
@@ -456,8 +459,8 @@ def assistance_count(conn: sqlite3.Connection, app_id: str | None = None) -> int
     """
     sql = ("SELECT COUNT(*) FROM queue q "
            "JOIN classifications c ON c.item_id = q.trigger_id "
-           "WHERE q.status IN (?, ?) AND c.intent IN ('question', 'unclear')")
-    params: list = [PENDING, NEEDS_RETRY]
+           "WHERE q.status IN (?, ?, ?) AND c.intent IN ('question', 'unclear')")
+    params: list = [PENDING, NEEDS_RETRY, AWAITING_CONFIRM]
     if app_id:
         sql += " AND q.app_id = ?"
         params.append(app_id)
@@ -465,8 +468,8 @@ def assistance_count(conn: sqlite3.Connection, app_id: str | None = None) -> int
 
 
 def pending_count(conn: sqlite3.Connection, app_id: str | None = None) -> int:
-    sql = "SELECT COUNT(*) FROM queue WHERE status IN (?, ?)"
-    params: list = [PENDING, NEEDS_RETRY]
+    sql = "SELECT COUNT(*) FROM queue WHERE status IN (?, ?, ?)"
+    params: list = [PENDING, NEEDS_RETRY, AWAITING_CONFIRM]
     if app_id:
         sql += " AND app_id = ?"
         params.append(app_id)

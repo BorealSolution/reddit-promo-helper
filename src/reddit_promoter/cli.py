@@ -386,8 +386,10 @@ def cmd_add(args) -> int:
 
     # Bulk: several people who all just asked for a code.
     if args.users:
-        names = backfill.normalise_usernames(
-            [n for n in re.split(r"[,\s]+", args.users) if n])
+        names, rejected = backfill.split_usernames(args.users)
+        if rejected:
+            console.print(f"[yellow]ignored (not valid usernames): "
+                          f"{', '.join(rejected[:5])}[/]")
         queued = 0
         for name in names:
             item = IncomingComment(
@@ -495,10 +497,12 @@ def cmd_backfill(args) -> int:
         raw_names = raw_names + " " + " ".join(lines)
 
     if raw_names.strip():
-        names = backfill.normalise_usernames(
-            [n for n in re.split(r"[,\s]+", raw_names) if n])
+        names, rejected = backfill.split_usernames(raw_names)
+        if rejected:
+            console.print(f"[yellow]ignored (not valid usernames): "
+                          f"{', '.join(rejected[:8])}[/]")
         if not names:
-            console.print("[red]no usernames found[/]")
+            console.print("[red]no valid usernames found[/]")
             return 1
         already = [n for n in names
                    if store.get_user(conn, cfg.app_id, n) is not None]
@@ -589,6 +593,24 @@ def cmd_backfill(args) -> int:
     counts = store.pool_counts(conn, cfg.app_id)
     for pool, c in sorted(counts.items()):
         console.print(f"  {pool}: {c['remaining']} unused of {c['total']}")
+    return 0
+
+
+def cmd_web(args) -> int:
+    """Open the point-and-click version in a browser."""
+    from . import web
+    console.print(f"[bold]Opening http://127.0.0.1:{args.port}/[/] in your "
+                  f"browser")
+    console.print("[dim]Leave this window open while you use it. "
+                  "Press Ctrl+C here when you are done.[/]")
+    try:
+        web.serve(app_id=args.app, port=args.port,
+                  open_browser=not args.no_browser)
+    except OSError as exc:
+        console.print(f"[red]Could not start the server: {exc}[/]")
+        console.print(f"[dim]Something may already be using port {args.port}. "
+                      f"Try: promoter web --port 5001[/]")
+        return 1
     return 0
 
 
@@ -820,6 +842,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--apply", action="store_true",
                    help="actually write it (default is a preview)")
     p.set_defaults(func=cmd_backfill)
+
+    p = sub.add_parser("web", help="open the point-and-click version in a browser")
+    p.add_argument("--app")
+    p.add_argument("--port", type=int, default=5000)
+    p.add_argument("--no-browser", action="store_true",
+                   help="do not open a browser window automatically")
+    p.set_defaults(func=cmd_web)
 
     p = sub.add_parser("retire-codes",
                        help="mark specific codes as already spent")

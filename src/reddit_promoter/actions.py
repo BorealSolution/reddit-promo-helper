@@ -10,6 +10,7 @@ rather than burning a second one, and no code is ever issued twice.
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import dataclass, field
 
 from .config import AppConfig
 from .db import log, transaction, utcnow
@@ -282,3 +283,188 @@ def block_user(conn: sqlite3.Connection, app_id: str, username: str) -> None:
         store.ensure_user(conn, app_id, username)
         store.set_user_state(conn, app_id, username, store.BLOCKED)
         log(conn, "user_blocked", app_id=app_id, username=username)
+
+
+# ---------------------------------------------------------------------------
+# Two-phase send, for a UI where the operator sends the message themselves.
+#
+# The terminal dashboard can block on a prompt; a web page cannot. So the work
+# splits: prepare_send allocates the code and renders every message, then
+# record_sent or record_not_sent closes it out once the operator says what
+# actually happened. The safety rule is unchanged - the code is reserved
+# before the operator sees it, and nothing counts as sent until they say so.
+# ---------------------------------------------------------------------------
+
+@dataclass
+class OutgoingMessage:
+    kind: str                 # pm | pm_reply | comment_reply
+    label: str                # what to call it in the UI
+    to: str                   # username, or the thing being replied to
+    body: str
+    subject: str | None = None
+    url: str | None = None    # where the operator should go to send it
+    carries_code: bool = False
+
+
+@dataclass
+class PreparedSend:
+    code: str | None
+    messages: list[OutgoingMessage]
+
+
+def compose_url(username: str, subject: str, body: str) -> str:
+    """A Reddit compose link with the message already filled in."""
+    from urllib.parse import quote
+    return ("https://www.reddit.com/message/compose/"
+            f"?to={quote(username)}&subject={quote(subject or '')}"
+            f"&message={quote(body)}")
+
+
+def prepare_send(conn: sqlite3.Connection, cfg: AppConfig, item: sqlite3.Row,
+                 body_override: str | None = None) -> PreparedSend:
+    """Allocate the code and render what must go out. Sends nothing.
+
+    Marks the item awaiting_confirm so that if the operator wanders off, it
+    reappears in the queue with its code still reserved rather than being
+    lost or silently counted as sent.
+    """
+    action = item["action"]
+    username = item["username"]
+    queue_id = item["id"]
+    body = body_override if body_override is not None else item["draft_body"]
+
+    if action == REVIEW_ONLY and body.strip().startswith(NO_DRAFT_PREFIX):
+        raise ActionError("nothing is written for this one yet - write a "
+                          "reply first, or drop it")
+
+    code = None
+    if action in (WEEKLY_CODE, LIFETIME_CODE):
+        code, body = _reserve(conn, cfg, item["pool"], username, queue_id,
+                              body, item["preview_code"])
+
+    messages = render_messages(cfg, item, body)
+
+    with transaction(conn):
+        store.set_queue_status(conn, queue_id, store.AWAITING_CONFIRM,
+                               allocated_code=code)
+    return PreparedSend(code=code, messages=messages)
+
+
+def rendered_messages(conn: sqlite3.Connection, cfg: AppConfig,
+                      item: sqlite3.Row) -> list["OutgoingMessage"]:
+    """What an already-prepared item's messages look like. Writes nothing.
+
+    Used to redraw a page without re-running the allocation.
+    """
+    body = item["draft_body"]
+    code = item["allocated_code"]
+    if code:
+        preview = item["preview_code"]
+        if preview and preview != code:
+            body = body.replace(preview, code)
+        body = body.replace(NO_CODE_PLACEHOLDER, code)
+    return render_messages(cfg, item, body)
+
+
+def render_messages(cfg: AppConfig, item: sqlite3.Row,
+                    body: str) -> list["OutgoingMessage"]:
+    """Which messages this item turns into, and where each one goes.
+
+    One definition, shared by the terminal and the web UI, so the two cannot
+    drift apart about what gets sent.
+    """
+    action = item["action"]
+    username = item["username"]
+    messages: list[OutgoingMessage] = []
+
+    if action == WEEKLY_CODE:
+        subject = item["subject"] or f"Your {cfg.name} promo code"
+        messages.append(OutgoingMessage(
+            kind="pm", label="Private message with the code", to=username,
+            subject=subject, body=body,
+            url=compose_url(username, subject, body), carries_code=True))
+        if item["ack_body"] and item["trigger_type"] == "comment":
+            messages.append(OutgoingMessage(
+                kind="comment_reply",
+                label="Public reply on their comment (no code)",
+                to=item["parent_id"] or "", body=item["ack_body"],
+                url=item["trigger_url"] or None))
+
+    elif action == LIFETIME_CODE:
+        subject = item["subject"] or f"Your lifetime {cfg.name} code"
+        if item["trigger_type"] == "message":
+            messages.append(OutgoingMessage(
+                kind="pm_reply", label="Reply in your message thread",
+                to=username, subject=subject, body=body,
+                url=compose_url(username, subject, body), carries_code=True))
+        else:
+            messages.append(OutgoingMessage(
+                kind="pm", label="Private message with the lifetime code",
+                to=username, subject=subject, body=body,
+                url=compose_url(username, subject, body), carries_code=True))
+
+    elif action == DUPLICATE_QUERY:
+        subject = item["subject"] or f"About your {cfg.name} code"
+        messages.append(OutgoingMessage(
+            kind="pm", label="Question about their earlier code", to=username,
+            subject=subject, body=body,
+            url=compose_url(username, subject, body)))
+
+    elif action == REVIEW_ONLY:
+        subject = item["subject"] or f"About {cfg.name}"
+        if item["trigger_type"] == "comment":
+            messages.append(OutgoingMessage(
+                kind="comment_reply", label="Reply to their comment",
+                to=item["parent_id"] or "", body=body,
+                url=item["trigger_url"] or None))
+        else:
+            messages.append(OutgoingMessage(
+                kind="pm", label="Reply to them", to=username,
+                subject=subject, body=body,
+                url=compose_url(username, subject, body)))
+    else:
+        raise ActionError(f"unknown action '{action}'")
+
+    return messages
+
+
+def record_sent(conn: sqlite3.Connection, cfg: AppConfig, item: sqlite3.Row,
+                code: str | None = None) -> None:
+    """The operator says it went out. Move state and close the item."""
+    action = item["action"]
+    username = item["username"]
+    code = code or item["allocated_code"]
+
+    with transaction(conn):
+        if action == WEEKLY_CODE:
+            store.set_user_state(conn, cfg.app_id, username,
+                                 store.AWAITING_PROOF, weekly_code=code,
+                                 weekly_sent_at=utcnow())
+            log(conn, "weekly_code_sent", app_id=cfg.app_id,
+                username=username, detail=code)
+        elif action == LIFETIME_CODE:
+            store.set_user_state(conn, cfg.app_id, username,
+                                 store.LIFETIME_SENT, lifetime_code=code,
+                                 lifetime_sent_at=utcnow())
+            log(conn, "lifetime_code_sent", app_id=cfg.app_id,
+                username=username, detail=code)
+        elif action == DUPLICATE_QUERY:
+            store.set_user_state(conn, cfg.app_id, username,
+                                 store.DUPLICATE_QUERY_SENT)
+            log(conn, "duplicate_query_sent", app_id=cfg.app_id,
+                username=username)
+        else:
+            log(conn, "freeform_reply_sent", app_id=cfg.app_id,
+                username=username, detail=f"queue:{item['id']}")
+        store.set_queue_status(conn, item["id"], store.SENT,
+                               allocated_code=code)
+
+
+def record_not_sent(conn: sqlite3.Connection, item: sqlite3.Row,
+                    reason: str = "operator said it was not sent") -> None:
+    """It did not go out. Keep the code reserved so a retry reuses it."""
+    with transaction(conn):
+        store.set_queue_status(conn, item["id"], store.NEEDS_RETRY,
+                               error=reason)
+        log(conn, "send_not_confirmed", app_id=item["app_id"],
+            username=item["username"], detail=f"queue:{item['id']}")

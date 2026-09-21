@@ -125,11 +125,20 @@ class TestAllocation(Base):
         self.assertEqual(first, second)
         self.assertEqual(store.pool_counts(self.conn, "sleepbound")["weekly"]["used"], 1)
 
+    def pool_size(self, pool):
+        """Read the size from the CSVs; these files change between campaigns."""
+        codes = set()
+        for cf in self.cfg.code_files:
+            if cf.pool == pool:
+                codes.update(c for c in store.read_codes_csv(cf.path, cf.column) if c)
+        return len(codes)
+
     def test_exhaustion_raises(self):
-        for i in range(37):
+        for i in range(self.pool_size("lifetime")):
             with transaction(self.conn):
                 store.ensure_user(self.conn, "sleepbound", f"L{i}")
                 store.allocate_code(self.conn, "sleepbound", "lifetime", f"L{i}")
+        # One more than the pool holds must fail rather than invent a code.
         with self.assertRaises(store.OutOfCodes):
             with transaction(self.conn):
                 store.ensure_user(self.conn, "sleepbound", "Lx")
