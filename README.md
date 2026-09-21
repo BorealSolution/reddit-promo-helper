@@ -68,6 +68,7 @@ python promoter.py review [--app sleepbound]       # the dashboard
 python promoter.py review --offline                # review without contacting Reddit
 python promoter.py check-dm                        # what the API can do with DMs
 python promoter.py post-template --app sleepbound  # the required post format
+python promoter.py backfill --app sleepbound       # recover past manual sends
 python promoter.py stats [--app sleepbound]
 python promoter.py reset-demo                      # clear local db (keeps a backup)
 ```
@@ -127,6 +128,39 @@ Do this before pointing it at a real post.
 7. Reply to that PM from the second account, then `poll` again and confirm the
    reply shows up as a queue item. **This is the step that validates the whole
    proof loop** — see the DM caveat below.
+
+## Backfilling codes you already gave out by hand
+
+The duplicate check only knows what the tool recorded. Anyone served manually
+before this existed looks brand new, comments again, and gets a second code.
+
+Your sent-messages folder is the record of what actually went out, so read it
+back:
+
+```bash
+python promoter.py backfill --app sleepbound            # preview, writes nothing
+python promoter.py backfill --app sleepbound --apply    # record it
+```
+
+It scans sent messages for 23-character promo codes, works out who got what
+and whether it was a weekly or a lifetime code, and shows you the table before
+writing anything. On `--apply` it records each person as already served, and
+retires any of those codes that are still marked unused in your CSVs - so a
+code you handed out by hand can never be issued a second time.
+
+Safe to re-run. It never downgrades someone who is further along, and a code
+already attributed to a different user is reported as a conflict rather than
+reassigned.
+
+For anyone the sent folder cannot account for - given out in a comment, over
+chat, or too long ago:
+
+```bash
+python promoter.py backfill --app sleepbound --users alice,u/bob --apply
+```
+
+That records them as served without inventing a code. **Do this before the
+first live poll**, or the first batch of repeat askers gets served twice.
 
 ## Posting
 

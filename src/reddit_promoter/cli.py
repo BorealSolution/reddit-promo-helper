@@ -10,7 +10,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from . import actions, dashboard, dmcheck, engine, store
+from . import actions, backfill, dashboard, dmcheck, engine, store
 from .classify import OfflineClassifier, build_classifier
 from .config import (ConfigError, DB_PATH, discover_app_ids, load_app_config,
                      load_secrets)
@@ -315,6 +315,109 @@ def cmd_stats(args) -> int:
     return 0
 
 
+def cmd_backfill(args) -> int:
+    """Recover who was already given a code, before this tool existed.
+
+    Reads the sent-messages folder. Without this the duplicate check is blind
+    to everyone served by hand: they comment again and look brand new.
+    """
+    try:
+        cfg = load_app_config(args.app)
+    except ConfigError as exc:
+        console.print(f"[red]{exc}[/]")
+        return 1
+
+    conn = _open_db()
+    store.register_app(conn, cfg)
+
+    # Usernames given on the command line need no Reddit access.
+    if args.users:
+        names = backfill.normalise_usernames(
+            [n for n in re.split(r"[,\s]+", args.users) if n])
+        if not args.apply:
+            console.print(f"[yellow]Would mark {len(names)} user(s) as already "
+                          f"served:[/] " + ", ".join(f"u/{n}" for n in names))
+            console.print("[dim]re-run with --apply to write it[/]")
+            return 0
+        done = backfill.mark_users_served(conn, cfg.app_id, names)
+        console.print(f"[green]Marked {done} user(s) as already served.[/]")
+        return 0
+
+    from .sources.reddit_source import (RedditAuthError, build_reddit,
+                                        verify_auth)
+    secrets = load_secrets()
+    try:
+        reddit = build_reddit(secrets)
+        me = verify_auth(reddit)
+    except RedditAuthError as exc:
+        console.print(f"[red]{exc}[/]")
+        console.print("[dim]Without credentials you can still record people "
+                      "by name: backfill --app <id> --users alice,bob "
+                      "--apply[/]")
+        return 1
+
+    console.print(f"[dim]reading the sent folder of u/{me}...[/]")
+    try:
+        report = backfill.scan_sent(reddit, conn, cfg.app_id, limit=args.limit)
+    except RuntimeError as exc:
+        console.print(f"[red]{exc}[/]")
+        return 1
+
+    console.print(f"[dim]scanned {report.scanned} sent message(s); "
+                  f"{report.skipped_no_code} contained no code[/]")
+
+    if not report.found:
+        console.print("[yellow]No codes found in your sent messages.[/]")
+        console.print("[dim]If you handed codes out another way, record those "
+                      "people with --users alice,bob[/]")
+        return 0
+
+    # Codes are 23 characters and must be readable in full - a truncated code
+    # cannot be checked against anything.
+    table = Table(title=f"Codes already sent - {cfg.name}"
+                        + ("" if args.apply else "  (PREVIEW, nothing written)"),
+                  box=None, pad_edge=False, header_style="dim")
+    table.add_column("user", overflow="fold")
+    table.add_column("pool")
+    table.add_column("code", no_wrap=True)
+    table.add_column("sent")
+    table.add_column("note", overflow="fold")
+
+    for f in report.found:
+        if not f.in_pool:
+            note = "older batch, not in the CSVs"
+        elif f.already_used_by and f.already_used_by != f.username:
+            note = f"CONFLICT: CSV says u/{f.already_used_by}"
+        elif f.already_used_by == f.username:
+            note = "already recorded"
+        else:
+            note = "in the CSVs, will be retired"
+        if f.already_known:
+            note += f"; user already {f.already_known}"
+        table.add_row(f"u/{f.username}", f.pool, f.code, f.sent_at[:10], note)
+    console.print(table)
+
+    for conflict in report.conflicts:
+        console.print(f"[yellow]conflict: {conflict}[/]")
+
+    in_pool = sum(1 for f in report.found if f.in_pool and not f.already_used_by)
+    console.print(f"\n[bold]{len(report.users)}[/] user(s) already served; "
+                  f"[bold]{in_pool}[/] of those codes are still marked unused "
+                  f"in your CSVs and would be retired.")
+
+    if not args.apply:
+        console.print("[dim]re-run with --apply to record it[/]")
+        return 0
+
+    backfill.apply_backfill(conn, cfg.app_id, report)
+    console.print(f"[green]Recorded {report.applied} user(s); "
+                  f"retired {report.codes_marked_used} code(s).[/]")
+    counts = store.pool_counts(conn, cfg.app_id)
+    for pool, c in sorted(counts.items()):
+        console.print(f"  {pool}: {c['remaining']} unused of {c['total']}")
+    return 0
+
+
 def cmd_post_template(args) -> int:
     """Print the post format for an app, ready to paste into Reddit.
 
@@ -427,6 +530,18 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("check-dm",
                        help="report what the API can do with direct messages")
     p.set_defaults(func=cmd_check_dm)
+
+    p = sub.add_parser("backfill",
+                       help="record people you already gave codes to by hand")
+    p.add_argument("--app", required=True)
+    p.add_argument("--limit", type=int, default=500,
+                   help="how many sent messages to scan (default 500)")
+    p.add_argument("--users",
+                   help="comma-separated usernames to mark as already served, "
+                        "instead of scanning the sent folder")
+    p.add_argument("--apply", action="store_true",
+                   help="actually write it (default is a preview)")
+    p.set_defaults(func=cmd_backfill)
 
     p = sub.add_parser("post-template",
                        help="print an app's required post format")
