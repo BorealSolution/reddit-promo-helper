@@ -1,0 +1,66 @@
+# Sleepbound app configuration.
+# Adding a new app = new folder + this file + CSVs, then `add-app` and `import-codes`.
+
+app_id: sleepbound
+name: Sleepbound
+store: play_store
+
+# Subreddits this app's posts live in. Informational / sanity-check only:
+# posts are watched explicitly by URL via the `watch` command.
+subreddits:
+  - TODO_SUBREDDIT
+
+# Code pools. `priority` is the allocation order within a pool: lowest first.
+code_files:
+  - path: codes/Reddit Promo.csv
+    pool: weekly
+    priority: 1
+    column: Promotion code
+  - path: codes/reddit round 2.csv
+    pool: weekly
+    priority: 2
+    column: Promotion code
+  - path: codes/review reward.csv
+    pool: lifetime
+    priority: 1
+    column: Promotion code
+
+# Warn on the dashboard home screen when a pool drops below this many unused codes.
+low_stock_threshold:
+  weekly: 25
+  lifetime: 10
+
+# Message templates. Placeholders: {username} {code} {app_name}
+# Weekly codes and lifetime codes both go out as private messages.
+# The public reply is a no-code "check your DMs" acknowledgement.
+templates:
+  weekly_code:
+    kind: private_message
+    subject: Your {app_name} promo code
+    body: |
+      Thanks for the interest, u/{username}! Here's your {app_name} promo code: **{code}**
+
+      To redeem: open the Play Store, tap your profile icon -> Payments & subscriptions -> Redeem code.
+
+      If you enjoy it, an honest review helps a lot. Reply to this message with a screenshot of your review and I'll send you a lifetime code.
+
+  public_ack:
+    kind: comment_reply
+    body: |
+      Sent you a DM with your code! Check your Reddit inbox (messages, not chat).
+
+  lifetime_code:
+    kind: private_message_reply
+    subject: Your lifetime {app_name} code
+    body: |
+      Thanks for the review, u/{username}! Here's your lifetime {app_name} code: **{code}**
+
+      Same redemption steps: Play Store -> profile icon -> Payments & subscriptions -> Redeem code.
+
+      Enjoy!
+
+  duplicate_query:
+    kind: private_message_reply
+    subject: About your {app_name} code
+    body: |
+      Hi u/{username} - looks like I already sent you a code for {app_name}. Did it not work, or is this a different request?

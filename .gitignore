@@ -1,0 +1,21 @@
+# Secrets
+.env
+
+# Local state (SQLite db + backups)
+data/
+
+# Promo codes are secrets - never commit them
+apps/**/codes/
+*.csv
+
+# Post images
+apps/**/*.png
+apps/**/*.jpg
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
